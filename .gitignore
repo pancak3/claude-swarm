@@ -1,0 +1,15 @@
+# Runtime artifacts
+.swarm-state/
+*.log
+__pycache__/
+*.pyc
+
+# Built binaries
+swarm-bus/swarm-bus
+*.test
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*~

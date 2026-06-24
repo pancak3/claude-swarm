@@ -1,0 +1,17 @@
+{
+  "name": "claude-swarm-local",
+  "owner": {
+    "name": "Qifan Deng"
+  },
+  "plugins": [
+    {
+      "name": "claude-swarm",
+      "source": "./",
+      "description": "Fractal multi-session swarm — parliamentary deliberation across independent Claude CLI sessions communicating via MCP",
+      "version": "0.9.3",
+      "author": {
+        "name": "Qifan Deng"
+      }
+    }
+  ]
+}
