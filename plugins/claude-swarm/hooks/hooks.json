@@ -1,16 +1,4 @@
 {
-  "description": "Claude Swarm - task interception hooks for parliamentary deliberation",
-  "hooks": {
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/swarm-intercept.sh",
-            "timeout": 300
-          }
-        ]
-      }
-    ]
-  }
+  "description": "Claude Swarm — parliamentary deliberation plugin. Use /swarm-debate, /swarm-init, or /swarm-config to interact.",
+  "hooks": {}
 }
