@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "description": "Role pool for swarm debate parameter diversity. Each role gets 3 sessions.",
+    "sessions_per_role": 3,
+    "perspectives": ["correctness", "simplicity", "performance"],
+    "mandatory": ["oracle", "chaos"]
+  },
+  "roles": {
+    "oracle":      {"temp": 0.00, "top_p": 0.00, "band": "anchor",    "desc": "Absolute determinism — always picks the single most probable token"},
+    "chaos":       {"temp": 2.00, "top_p": 1.00, "band": "anchor",    "desc": "Maximum entropy — every token equally likely"},
+    "auditor":     {"temp": 0.02, "top_p": 0.55, "band": "precision", "desc": "Nearly deterministic + narrow — finds worst-case edge cases"},
+    "judge":       {"temp": 0.08, "top_p": 0.75, "band": "precision", "desc": "Highly precise — verifies claims, detects contradictions"},
+    "surgeon":     {"temp": 0.12, "top_p": 0.88, "band": "precision", "desc": "Precise but broad vocabulary — pinpoint fixes"},
+    "architect":   {"temp": 0.20, "top_p": 0.82, "band": "structured","desc": "Structured and methodical — system design, API contracts"},
+    "clarifier":   {"temp": 0.25, "top_p": 0.92, "band": "structured","desc": "Clear language + broad vocab — documentation, teaching"},
+    "skeptic":     {"temp": 0.30, "top_p": 0.80, "band": "structured","desc": "Focused and questioning — finds flaws, hidden assumptions"},
+    "scholar":     {"temp": 0.35, "top_p": 0.85, "band": "structured","desc": "Balanced academic — systematic evaluation, taxonomy"},
+    "diplomat":    {"temp": 0.40, "top_p": 0.88, "band": "creative",  "desc": "Balanced + nuanced — trade-offs, multi-stakeholder"},
+    "teacher":     {"temp": 0.50, "top_p": 0.90, "band": "creative",  "desc": "Accessible + broad — step-by-step reasoning, examples"},
+    "synthesizer": {"temp": 0.45, "top_p": 0.92, "band": "creative",  "desc": "Pattern connector — meta-analysis, summarization"},
+    "optimizer":   {"temp": 0.55, "top_p": 0.90, "band": "creative",  "desc": "Systematic improvement — bottlenecks, incremental gains"},
+    "explorer":    {"temp": 0.60, "top_p": 0.92, "band": "creative",  "desc": "Balanced creativity — alternatives, divergent thinking"},
+    "innovator":   {"temp": 0.70, "top_p": 0.95, "band": "divergent", "desc": "Creative + wide — unconventional approaches, breakthroughs"},
+    "visionary":   {"temp": 0.85, "top_p": 0.98, "band": "divergent", "desc": "Far-sighted — trends, scenario planning, moonshots"},
+    "brainstormer":{"temp": 0.90, "top_p": 0.95, "band": "divergent", "desc": "Maximum useful creativity — rapid ideation, lateral thinking"},
+    "provocateur": {"temp": 1.20, "top_p": 0.98, "band": "divergent", "desc": "Deliberately unconventional — breaks groupthink"}
+  },
+  "query_types": {
+    "audit":      {"roles": ["auditor", "judge", "skeptic"]},
+    "design":     {"roles": ["architect", "diplomat", "explorer"]},
+    "implement":  {"roles": ["surgeon", "architect", "optimizer"]},
+    "research":   {"roles": ["scholar", "skeptic", "synthesizer"]},
+    "creative":   {"roles": ["innovator", "brainstormer", "visionary"]},
+    "review":     {"roles": ["judge", "skeptic", "clarifier"]},
+    "document":   {"roles": ["clarifier", "teacher", "scholar"]},
+    "decision":   {"roles": ["diplomat", "skeptic", "optimizer"]},
+    "deep":       {"roles": ["auditor","judge","surgeon","architect","clarifier","skeptic","scholar","diplomat","teacher","synthesizer","optimizer","explorer","innovator","visionary","brainstormer","provocateur"]}
+  }
+}

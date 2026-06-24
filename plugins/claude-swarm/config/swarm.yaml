@@ -1,0 +1,48 @@
+# Claude Swarm — default configuration
+# All values can be overridden per-project or per-session
+
+max_sessions: 128
+orchestrator_count: 3
+synthesis_count: 3
+depth_limit: 5
+min_sessions: 3
+
+# fast_path: use 3-round protocol (propose → vote → execute) instead of full 5-round.
+# Full parliamentary (critique+rebuttal) is 2-3x slower per round cycle.
+# Enable full mode for high-stakes or ambiguous tasks via config.
+fast_path: true
+
+round_timeouts:
+  register: 30s
+  propose: 60s
+  critique: 90s
+  rebuttal: 60s
+  vote: 30s
+
+model: claude-sonnet-4-6
+
+diversity_perspectives:
+  - correctness
+  - simplicity
+  - performance
+  - security
+
+deadlock_max_retries: 3
+deadlock_backoff: 1.5
+
+# shared_contract: sessions register intended module/class names before EXECUTE
+# to prevent divergent naming across sessions.
+shared_contract: true
+
+# session_dirs: each session writes to sessions/s{N}/output/ instead of project root.
+# SYNTHESIS picks best implementations from session-specific output dirs.
+session_dirs: true
+
+# test_spec: orchestrator writes test stubs before EXECUTE; sessions implement
+# code to pass them. Test files are immutable during EXECUTE. Set via SWARM_TEST_SPEC
+# env var or in this config.
+test_spec: ""
+
+logging:
+  level: info
+  dir: .swarm-state/logs

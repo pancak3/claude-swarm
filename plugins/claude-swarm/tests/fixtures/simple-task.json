@@ -1,0 +1,8 @@
+{
+  "task_id": "test-001",
+  "description": "Fix the null pointer exception in UserService.getProfile() by adding a null check before accessing user.preferences",
+  "expected_swarm_size": 5,
+  "expected_subtasks": 2,
+  "category": "bug-fix",
+  "complexity": "simple"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "claude-swarm",
+  "version": "0.9.3",
+  "description": "Fractal multi-session swarm — replaces single-session execution with parliamentary deliberation across independent Claude CLI sessions communicating via MCP",
+  "author": {
+    "name": "Qifan Deng"
+  }
+}

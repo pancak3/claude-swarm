@@ -1,0 +1,9 @@
+{
+  "_comment": "Template — swarm-orchestrate.sh creates a dynamic mcp config at runtime with the actual port.",
+  "mcpServers": {
+    "swarm-bus": {
+      "type": "http",
+      "url": "http://localhost:${SWARM_BUS_PORT}/mcp"
+    }
+  }
+}

@@ -1,0 +1,54 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/anthropics/claude-code/plugins/claude-swarm/swarm-bus/state"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// GetContractTool returns the swarm_get_contract MCP tool.
+func GetContractTool(machine *state.Machine) (*mcp.Tool, mcp.ToolHandler) {
+	tool := &mcp.Tool{
+		Name:        "swarm_get_contract",
+		Description: "Read all module/class names registered in the shared contract. Use before coding to avoid naming conflicts.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "Your session ID"},
+				"auth_token": map[string]interface{}{"type": "string", "description": "Auth token from swarm_register"},
+			},
+			"required": []string{"session_id", "auth_token"},
+		},
+	}
+
+	handler := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args, err := parseArgs(req.Params.Arguments)
+		if err != nil {
+			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil
+		}
+
+		sessionID := getString(args, "session_id")
+		authToken := getString(args, "auth_token")
+
+		if msg := checkAuth(machine.SessionRegistry, sessionID, authToken); msg != "" {
+			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: msg}}}, nil
+		}
+
+		entries := machine.GetContracts()
+		if len(entries) == 0 {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "(no contract entries registered yet)"}},
+			}, nil
+		}
+
+		b, _ := json.MarshalIndent(entries, "", "  ")
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Contract entries:\n%s", string(b))}},
+		}, nil
+	}
+
+	return tool, handler
+}
