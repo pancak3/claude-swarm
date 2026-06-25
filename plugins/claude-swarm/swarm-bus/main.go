@@ -224,7 +224,11 @@ func run() error {
 	port := listener.Addr().(*net.TCPAddr).Port
 
 	// Print port to stdout so the orchestrator can capture it.
+	// Explicitly flush — when stdout is redirected to a file, Go uses
+	// block-buffering (4KB default), so without Sync() the port line
+	// may sit in the buffer and the orchestrator times out waiting.
 	fmt.Printf("SWARM_BUS_PORT=%d\n", port)
+	os.Stdout.Sync()
 	fmt.Fprintf(os.Stderr, "[swarm-bus] listening on port %d\n", port)
 	fmt.Fprintf(os.Stderr, "[swarm-bus] task: %s\n", protocol.SanitizeLog(taskBrief.Description))
 
