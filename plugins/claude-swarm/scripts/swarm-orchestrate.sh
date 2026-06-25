@@ -249,7 +249,7 @@ sys.stderr.write(f'Roles: {selected_names} -> {total} sessions\\n')
   PROXY_PORT=""
   for i in $(seq 1 20); do
     if [ -s "${PROXY_LOG}" ]; then
-      PROXY_PORT=$(grep -oE "SWARM_PROXY_PORT=[0-9]+" "${PROXY_LOG}" 2>/dev/null | head -1 | cut -d= -f2)
+      PROXY_PORT=$(grep -oE "SWARM_PROXY_PORT=[0-9]+" "${PROXY_LOG}" 2>/dev/null | head -1 | cut -d= -f2 || true)
       [ -n "${PROXY_PORT}" ] && break
     fi
     sleep 0.5
@@ -289,7 +289,7 @@ BUS_PID=$!
 FOUND_PORT=""
 for i in $(seq 1 30); do
   if [ -f "${BUS_LOG}" ]; then
-    FOUND_PORT=$(grep -oE "SWARM_BUS_PORT=[0-9]+" "${BUS_LOG}" 2>/dev/null | head -1 | cut -d= -f2)
+    FOUND_PORT=$(grep -oE "SWARM_BUS_PORT=[0-9]+" "${BUS_LOG}" 2>/dev/null | head -1 | cut -d= -f2 || true)
     if [ -n "${FOUND_PORT}" ]; then
       break
     fi
