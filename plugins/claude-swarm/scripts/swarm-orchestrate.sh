@@ -184,27 +184,27 @@ perspectives = pool['meta']['perspectives']  # [correctness, simplicity, perform
 sessions_per = pool['meta']['sessions_per_role']  # 3
 
 # Determine which roles to use.
-selected_names = list(pool['meta']['mandatory'])  # ['oracle', 'chaos']
+max_roles = max(1, ${SWARM_SIZE} // sessions_per)
 
+mandatory = list(pool['meta']['mandatory'])  # ['oracle', 'chaos']
 query_type = os.environ.get('SWARM_QUERY_TYPE', '')
 custom_roles = os.environ.get('SWARM_ROLES', '')
 
 if custom_roles:
-    selected_names += [r.strip() for r in custom_roles.split(',') if r.strip()]
+    extra = [r.strip() for r in custom_roles.split(',') if r.strip()]
 elif query_type and query_type in pool.get('query_types', {}):
-    selected_names += pool['query_types'][query_type]['roles']
+    extra = pool['query_types'][query_type]['roles']
 else:
-    # Default: balanced set
-    selected_names += ['judge', 'architect', 'innovator']
+    extra = ['judge', 'architect', 'innovator']
 
-# Deduplicate while preserving order.
-seen = set()
-ordered = []
-for r in selected_names:
-    if r not in seen and r in roles_data:
-        ordered.append(r)
-        seen.add(r)
-selected_names = ordered
+# Build ordered list: mandatory first, then extras, capped at max_roles.
+all_candidates = mandatory + extra
+selected_names = []
+for r in all_candidates:
+    if len(selected_names) >= max_roles:
+        break
+    if r not in selected_names and r in roles_data:
+        selected_names.append(r)
 
 # Generate sessions: each role gets 3 sessions, one per perspective.
 config = {}
