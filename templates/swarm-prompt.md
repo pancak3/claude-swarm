@@ -38,11 +38,16 @@ Call `swarm_get_status` (with session_id and auth_token) to check the current ro
 
 **If EXECUTE — test spec:** If a $TEST_SPEC_FILE exists, read it first and implement code to pass the tests. **Do NOT modify the test file** — it is immutable during EXECUTE.
 
+**If CLOSED or SYNTHESIS:** The debate has concluded. Skip further bus calls and go directly to Step 4 to report your contribution.
+
+**If round is unknown or bus returns an error:** Stop calling the bus. Go to Step 4 and report what you've done so far.
+
 ### Step 4: Report
-Summarize what you did, tools called, and outcome.
+Summarize what you did, tools called, and outcome. Be thorough — this is the primary record of your participation.
 
 ## Critical Rules
 - **Auth token**: Save it from register, pass it to EVERY subsequent call as `auth_token`.
 - **Submit first, research later**: The PROPOSE round is short. Submit immediately.
 - **Check status between actions**: Use `swarm_get_status` to detect round changes.
 - **One critique call covers ALL proposals**: Array format.
+- **Stop when done**: If the bus round is CLOSED or SYNTHESIS, or if bus calls start failing, STOP and report. Do not loop indefinitely.

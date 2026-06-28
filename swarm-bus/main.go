@@ -38,11 +38,11 @@ func run() error {
 	}
 
 	timeouts := protocol.RoundTimeouts{
-		Register: parseDuration(envDefault("SWARM_TIMEOUT_REGISTER", "60s"), 60*time.Second),
-		Propose:  parseDuration(envDefault("SWARM_TIMEOUT_PROPOSE", "150s"), 150*time.Second),
-		Critique: parseDuration(envDefault("SWARM_TIMEOUT_CRITIQUE", "90s"), 90*time.Second),
-		Rebuttal: parseDuration(envDefault("SWARM_TIMEOUT_REBUTTAL", "60s"), 60*time.Second),
-		Vote:     parseDuration(envDefault("SWARM_TIMEOUT_VOTE", "300s"), 300*time.Second),
+		Register: parseDuration(envDefault("SWARM_TIMEOUT_REGISTER", "30s"), 30*time.Second),
+		Propose:  parseDuration(envDefault("SWARM_TIMEOUT_PROPOSE", "60s"), 60*time.Second),
+		Critique: parseDuration(envDefault("SWARM_TIMEOUT_CRITIQUE", "45s"), 45*time.Second),
+		Rebuttal: parseDuration(envDefault("SWARM_TIMEOUT_REBUTTAL", "30s"), 30*time.Second),
+		Vote:     parseDuration(envDefault("SWARM_TIMEOUT_VOTE", "90s"), 90*time.Second),
 	}
 
 
@@ -224,7 +224,11 @@ func run() error {
 	port := listener.Addr().(*net.TCPAddr).Port
 
 	// Print port to stdout so the orchestrator can capture it.
+	// Explicitly flush — when stdout is redirected to a file, Go uses
+	// block-buffering (4KB default), so without Sync() the port line
+	// may sit in the buffer and the orchestrator times out waiting.
 	fmt.Printf("SWARM_BUS_PORT=%d\n", port)
+	os.Stdout.Sync()
 	fmt.Fprintf(os.Stderr, "[swarm-bus] listening on port %d\n", port)
 	fmt.Fprintf(os.Stderr, "[swarm-bus] task: %s\n", protocol.SanitizeLog(taskBrief.Description))
 
