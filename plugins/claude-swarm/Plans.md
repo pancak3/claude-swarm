@@ -8,19 +8,19 @@
 
 | Task | 内容 | DoD | Depends | Status |
 |------|------|-----|---------|--------|
-| 1.1 | Fix MCP permission denial in analyze mode | spawn.sh uses bypassPermissions with --allowedTools gate | - | cc:TODO |
-| 1.2 | Fix swarm-htop.sh zsh compatibility | `status` variable renamed, `fmt_cost` issues fixed | - | cc:TODO |
-| 1.3 | Fix orchestrator synthesis — empty session logs | synthesis reads participation from bus API instead of file logs | 1.1 | cc:TODO |
-| 1.4 | Fix session graceful exit detection | prompt.md instructs sessions to stop on CLOSED/SYNTHESIS | - | cc:TODO |
+| 1.1 | Fix MCP permission denial in analyze mode | spawn.sh uses bypassPermissions with --allowedTools gate | - | cc:完了 |
+| 1.2 | Fix swarm-htop.sh zsh compatibility | `status` variable renamed, `fmt_cost` issues fixed | - | cc:完了 |
+| 1.3 | Fix orchestrator synthesis — empty session logs | synthesis reads participation from bus API instead of file logs | 1.1 | cc:完了 |
+| 1.4 | Fix session graceful exit detection | prompt.md instructs sessions to stop on CLOSED/SYNTHESIS | - | cc:完了 |
 
 ## Phase 2: Plugin distribution
 
 | Task | 内容 | DoD | Depends | Status |
 |------|------|-----|---------|--------|
-| 2.1 | Bump version and update plugin manifest | version bumped in package.json / plugin.yaml | 1.1-1.4 | cc:TODO |
-| 2.2 | Build swarm-bus binary | `go build` succeeds, binary committed or buildable | 1.1 | cc:TODO |
-| 2.3 | Commit + push to repo | `git push origin main` succeeds | 2.1, 2.2 | cc:TODO |
-| 2.4 | Verify install from marketplace | Fresh install works, swarm test passes | 2.3 | cc:TODO |
+| 2.1 | Bump version and update plugin manifest | version bumped in package.json / plugin.yaml | 1.1-1.4 | cc:完了 |
+| 2.2 | Build swarm-bus binary | `go build` succeeds, binary committed or buildable | 1.1 | cc:完了 |
+| 2.3 | Commit + push to repo | `git push origin main` succeeds | 2.1, 2.2 | cc:完了 |
+| 2.4 | Verify install from marketplace | Fresh install works, swarm test passes | 2.3 | cc:完了 |
 
 ---
 
