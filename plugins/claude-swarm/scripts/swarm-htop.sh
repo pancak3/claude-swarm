@@ -118,9 +118,190 @@ compact_poll() {
 
 # ── Direct execution mode (legacy, used by some workflows) ──────────────────
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-  # Running directly, not sourced. Poll continuously.
-  BUS_PORT="${1:?bus port required}"
-  echo "[$(date +%H:%M:%S)] htop: polling bus :${BUS_PORT}/status every 2s (direct mode)"
+  # Running directly, not sourced.
+
+  # ── Auto-discover running swarm-bus instances ─────────────────────────────
+  # Strategy: search .swarm-state/*/ in cwd + up to 3 parent dirs,
+  # extract port from bus.log for each active PID, verify with curl.
+  discover_buses() {
+    local discovered="" search_dirs="" d
+
+    # Build search path: cwd + up to 3 parent dirs.
+    search_dirs="${PWD}"
+    d="${PWD}"
+    for __ in 1 2 3; do
+      d="${d%/*}"
+      [ -n "${d}" ] && search_dirs="${search_dirs}"$'\n'"${d}"
+    done
+    search_dirs=$(echo "${search_dirs}" | sort -u)
+
+    while IFS= read -r sdir; do
+      [ -z "${sdir}" ] && continue
+      local ss="${sdir}/.swarm-state"
+      [ ! -d "${ss}" ] && continue
+      for rundir in "${ss}"/swarm-*; do
+        [ ! -d "${rundir}" ] && continue
+        local pid_file="${rundir}/bus.pid"
+        local bus_log="${rundir}/bus.log"
+        [ ! -f "${pid_file}" ] && continue
+        [ ! -f "${bus_log}" ] && continue
+
+        local pid
+        pid=$(cat "${pid_file}" 2>/dev/null || echo "")
+        [ -z "${pid}" ] && continue
+
+        # Verify PID is alive and is a swarm-bus.
+        if ! kill -0 "${pid}" 2>/dev/null; then continue; fi
+        if ! ps -p "${pid}" -o comm= 2>/dev/null | grep -q "swarm-bus"; then continue; fi
+
+        local port
+        port=$(grep -oE "SWARM_BUS_PORT=[0-9]+" "${bus_log}" 2>/dev/null | head -1 | cut -d= -f2)
+        [ -z "${port}" ] && continue
+
+        # Quick liveness check.
+        if ! curl -sf --max-time 1 "http://127.0.0.1:${port}/status" >/dev/null 2>&1; then continue; fi
+
+        local task_info
+        task_info=$(grep "task:" "${bus_log}" 2>/dev/null | head -1 | sed 's/.*task: //' | cut -c1-60)
+        [ -z "${task_info}" ] && task_info="(unknown task)"
+
+        local run_ts
+        run_ts=$(basename "${rundir}" | sed 's/^swarm-//')
+
+        discovered="${discovered}${port}	${run_ts}	${task_info}"$'\n'
+      done
+    done <<< "${search_dirs}"
+
+    # Fallback: scan for swarm-bus PIDs not found via .swarm-state (e.g. custom ports).
+    # Collect known PIDs from discovered entries.
+    local known_pids=""
+    while IFS= read -r line; do
+      local dport; dport=$(echo "${line}" | cut -f1)
+      [ -z "${dport}" ] && continue
+      known_pids="${known_pids} ${dport}"
+    done <<< "${discovered}"
+
+    if command -v ss >/dev/null 2>&1; then
+      local bus_pids; bus_pids=$(pgrep -f 'swarm-bus' 2>/dev/null || true)
+      for pid in ${bus_pids}; do
+        local ss_port; ss_port=$(ss -tlnp 2>/dev/null | grep "pid=${pid}" | grep -oE ':[0-9]+' | head -1 | tr -d ':')
+        [ -z "${ss_port}" ] && continue
+        # Skip if port already in discovered list.
+        if echo " ${known_pids} " | grep -q " ${ss_port} "; then continue; fi
+        if curl -sf --max-time 1 "http://127.0.0.1:${ss_port}/status" >/dev/null 2>&1; then
+          discovered="${discovered}${ss_port}	?	(discovered via ss)"$'\n'
+          known_pids="${known_pids} ${ss_port}"
+        fi
+      done
+    fi
+
+    # Remove empty lines and deduplicate by port.
+    echo "${discovered}" | grep -v '^$' | sort -t$'\t' -k1 -u
+  }
+
+  # ── Interactive arrow-key selector (up/down + enter) ──────────────────────
+  # Usage: interactive_select <entries_tsv>
+  # Returns: index (1-based) of selected entry.
+  interactive_select() {
+    local entries="$1"
+    local count
+    count=$(echo "${entries}" | wc -l)
+    local selected=1
+
+    # Save terminal state, switch to raw mode.
+    local saved_stty; saved_stty=$(stty -g 2>/dev/null || echo "")
+    stty raw -echo min 0 time 0 2>/dev/null || true
+
+    _cleanup_sel() {
+      [ -n "${saved_stty}" ] && stty "${saved_stty}" 2>/dev/null || stty sane 2>/dev/null
+      echo ""
+    }
+    trap _cleanup_sel EXIT
+
+    while true; do
+      # Move cursor up <count> lines, redraw all options.
+      if [ "${selected}" -gt 1 ]; then
+        printf '\033[%dA' "$((selected - 1))"
+      fi
+
+      local i=1
+      while IFS=$'\t' read -r port ts task; do
+        [ -z "${port}" ] && continue
+        local marker=" "
+        if [ "${i}" -eq "${selected}" ]; then marker=">"; else marker=" "; fi
+        # Clear line, print option.
+        printf '\033[2K'
+        printf " %s [%s] %-8s  %s\n" "${marker}" "${ts}" ":${port}" "${task}"
+        i=$((i + 1))
+      done <<< "${entries}"
+
+      # Read a single key.
+      local key; key=$(dd bs=3 count=1 2>/dev/null || echo "")
+
+      case "${key}" in
+        $'\033[A') # Up arrow
+          if [ "${selected}" -gt 1 ]; then
+            # Move cursor up.
+            printf '\033[%dA' "$((count - selected + 1))"
+            selected=$((selected - 1))
+          fi
+          ;;
+        $'\033[B') # Down arrow
+          if [ "${selected}" -lt "${count}" ]; then
+            selected=$((selected + 1))
+          else
+            # Already at bottom, reposition to redraw.
+            printf '\033[%dA' "$count"
+            selected=1
+          fi
+          ;;
+        $'\r'|$'\n'|'') # Enter or empty (timeout)
+          # Move cursor below options and exit loop.
+          printf '\033[%dB' "$((count - selected))"
+          break
+          ;;
+        *)
+          # Ignore other keys.
+          ;;
+      esac
+    done
+
+    trap - EXIT
+    _cleanup_sel
+    echo "${selected}"
+  }
+
+  # ── Discover buses ────────────────────────────────────────────────────────
+  BUS_LIST=$(discover_buses)
+  BUS_COUNT=$(echo "${BUS_LIST}" | grep -c '^' 2>/dev/null || echo 0)
+
+  if [ "${BUS_COUNT}" -eq 0 ]; then
+    echo "[$(date +%H:%M:%S)] htop: no swarm-bus instances found."
+    echo ""
+    echo "  Searched .swarm-state/ in: ${PWD} and up to 3 parent dirs."
+    echo "  Check that a swarm is running (swarm-orchestrate.sh)."
+    echo ""
+    echo "  You can still specify a port manually:"
+    echo "    $(basename "$0") <port>"
+    exit 1
+  fi
+
+  if [ "${BUS_COUNT}" -eq 1 ]; then
+    BUS_PORT=$(echo "${BUS_LIST}" | cut -f1)
+    BUS_TASK=$(echo "${BUS_LIST}" | cut -f3)
+    echo "[$(date +%H:%M:%S)] htop: auto-selected bus :${BUS_PORT} (${BUS_TASK})"
+  else
+    echo "[$(date +%H:%M:%S)] htop: ${BUS_COUNT} swarm-bus instances found."
+    echo "  Use ↑/↓ to select, Enter to confirm."
+    echo ""
+    SELECTED_IDX=$(interactive_select "${BUS_LIST}")
+    BUS_PORT=$(echo "${BUS_LIST}" | sed -n "${SELECTED_IDX}p" | cut -f1)
+    BUS_TASK=$(echo "${BUS_LIST}" | sed -n "${SELECTED_IDX}p" | cut -f3)
+    echo "  Selected bus :${BUS_PORT} (${BUS_TASK})"
+  fi
+
+  echo ""
+  echo "[$(date +%H:%M:%S)] htop: polling bus :${BUS_PORT}/status every 2s"
   while true; do
     compact_poll "${BUS_PORT}"
     sleep 2
