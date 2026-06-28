@@ -44,14 +44,21 @@ compact_poll() {
   votes=$(    echo "${data}" | jq -r '.votes_cast // 0')
   timeleft=$( echo "${data}" | jq -r '.time_remaining // "?"')
 
-  local tin tout
-  tin=$(  echo "${data}" | jq -r '[.sessions[]?.tokens_in // 0] | add // 0' 2>/dev/null || echo 0)
-  tout=$( echo "${data}" | jq -r '[.sessions[]?.tokens_out // 0] | add // 0' 2>/dev/null || echo 0)
-  local cost
-  cost=$(fmt_cost "${tin}" "${tout}")
+  # Count words in proposals as a rough effort estimate.
+  # Tokens aren't available from the bus API, so we count
+  # words in proposal approach + architecture fields.
+  # (risks excluded — they are short lists and inflate counts
+  #  when the bus JSON has unescaped control chars in them.)
+  local total_words
+  total_words=$(echo "${data}" | jq -r '
+    [.proposals[]? |
+      ((.approach // "") | split(" ") | length) +
+      ((.architecture // "") | split(" ") | length)
+    ] | add // 0
+  ' 2>/dev/null || echo 0)
 
   # ── Header ──
-  echo "── $(date +%H:%M:%S) ${round} | sessions=${active}/${total} | proposals=${props} | votes=${votes} | time=${timeleft} | cost=${cost} ──"
+  echo "── $(date +%H:%M:%S) ${round} | sessions=${active}/${total} | proposals=${props} | votes=${votes} | time=${timeleft} | ~${total_words}w ──"
 
   # ── Session tree ──
   local sess_count
@@ -60,24 +67,27 @@ compact_poll() {
     local idx=0
     while IFS= read -r line; do
       idx=$((idx + 1))
-      local sid spersp sactive tok_in tok_out
+      local sid spersp sactive
       sid=$(    echo "${line}" | jq -r '.id // "?"')
       spersp=$( echo "${line}" | jq -r '.perspective // "?"')
       sactive=$(echo "${line}" | jq -r '.active // false')
-      tok_in=$( echo "${line}" | jq -r '.tokens_in // 0')
-      tok_out=$(echo "${line}" | jq -r '.tokens_out // 0')
-      tok_in=${tok_in:-0}; tok_out=${tok_out:-0}
+
+      # Count words in proposals from this session as effort estimate.
+      local swords
+      swords=$(echo "${data}" | jq -r --arg sid "${sid}" '
+        [.proposals[]? | select(.session_id == $sid) |
+          ((.approach // "") | split(" ") | length) +
+          ((.architecture // "") | split(" ") | length)
+        ] | add // 0
+      ' 2>/dev/null || echo 0)
 
       local conn icon sstatus
       if [ "${idx}" -lt "${sess_count}" ]; then conn="├──"; else conn="└──"; fi
       if [ "${sactive}" = "true" ]; then icon="●"; sstatus="${round}"; else icon="○"; sstatus="inactive"; fi
-      local scost; scost=$(fmt_cost "${tok_in}" "${tok_out}")
 
-      printf "  %s %s %-5s %-12s in: %6s  out: %6s  cost: %s\n" \
+      printf "  %s %s %-5s %-12s %5sw\n" \
         "${conn}" "${icon}" "${sid}" "${spersp}" \
-        "$(printf "%'d" "${tok_in}" 2>/dev/null || echo "${tok_in}")" \
-        "$(printf "%'d" "${tok_out}" 2>/dev/null || echo "${tok_out}")" \
-        "${scost}"
+        "${swords}"
     done < <(echo "${data}" | jq -c '.sessions | sort_by(.id)[]' 2>/dev/null)
   fi
 
