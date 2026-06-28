@@ -34,7 +34,7 @@ compact_poll() {
   local data
   data=$(curl -sf --max-time 2 "http://127.0.0.1:${port}/status" 2>/dev/null || echo "")
   if [ -z "${data}" ]; then
-    return
+    return 1
   fi
   local round active total props votes timeleft
   round=$(    echo "${data}" | jq -r '.round // "?"')
@@ -317,12 +317,60 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   # ── In-place dashboard loop ──────────────────────────────────────────────
   # Capture output of each poll, then redraw in-place using ANSI escapes
   # so the terminal shows a live-updating dashboard instead of scrolling.
+  # Auto-exit when the bus goes down or the swarm is finished + stale.
   _prev_lines=0 _first=1
+  _stale=0 _last_fp="" _bus_gone=0
   _saved_stty=$(stty -g 2>/dev/null || echo "")
   trap 'stty "${_saved_stty}" 2>/dev/null || stty sane 2>/dev/null; echo ""' EXIT
 
   while true; do
     _output=$(compact_poll "${BUS_PORT}" 2>/dev/null || true)
+    _bus_ok=$?
+
+    # ── Auto-exit detection ───────────────────────────────────────────────
+    # Build a fingerprint from the first line of output (round + counts).
+    _cur_fp=$(echo "${_output}" | head -1)
+
+    if [ "${_bus_ok}" -ne 0 ] || [ -z "${_output}" ]; then
+      # Bus unreachable.
+      _bus_gone=$((_bus_gone + 1))
+      if [ "${_bus_gone}" -ge 3 ]; then
+        printf '\033[J'
+        echo "[$(date +%H:%M:%S)] htop: bus :${BUS_PORT} unreachable for 3 polls — exiting."
+        break
+      fi
+      _stale=0
+      _last_fp=""
+      sleep 2
+      continue
+    fi
+    _bus_gone=0
+
+    # Check if the fingerprint matches the previous poll.
+    if [ "${_cur_fp}" = "${_last_fp}" ]; then
+      _stale=$((_stale + 1))
+    else
+      _stale=0
+    fi
+    _last_fp="${_cur_fp}"
+
+    # CLOSED + unchanged for 3 polls → swarm finished.
+    if echo "${_cur_fp}" | grep -q "CLOSED" && [ "${_stale}" -ge 3 ]; then
+      printf '\033[J'
+      echo ""
+      echo "[$(date +%H:%M:%S)] htop: swarm finished (CLOSED, no changes for ${_stale} polls)."
+      break
+    fi
+
+    # Stale for too long in any other round → warn but keep going.
+    if [ "${_stale}" -ge 10 ]; then
+      printf '\033[J'
+      echo ""
+      echo "[$(date +%H:%M:%S)] htop: no changes for ${_stale} polls — swarm may be stuck. Exiting."
+      break
+    fi
+
+    # ── Redraw ─────────────────────────────────────────────────────────────
 
     if [ "${_first}" -eq 1 ]; then
       _first=0
