@@ -120,7 +120,7 @@ compact_poll() {
       if [ "${pelim}" = "true" ]; then ptag="✗"; else ptag="✓"; fi
 	      local elim_flag=""; if [ "${pelim}" = "true" ]; then elim_flag=" (eliminated)"; fi
       echo "  ${pconn} ${ptag} ${pid}  conf: ${pconf}%${elim_flag}"
-    done < <(echo "${data}" | jq -c '.proposals[]' 2>/dev/null)
+    done < <(echo "${data}" | jq -c '.proposals | sort_by(.id | ltrimstr("p-") | tonumber)[]' 2>/dev/null)
   fi
 
   echo ""
