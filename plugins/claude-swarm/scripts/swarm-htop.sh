@@ -68,9 +68,9 @@ compact_poll() {
       tok_out=$(echo "${line}" | jq -r '.tokens_out // 0')
       tok_in=${tok_in:-0}; tok_out=${tok_out:-0}
 
-      local conn icon status
+      local conn icon sstatus
       if [ "${idx}" -lt "${sess_count}" ]; then conn="├──"; else conn="└──"; fi
-      if [ "${sactive}" = "true" ]; then icon="●"; status="${round}"; else icon="○"; status="inactive"; fi
+      if [ "${sactive}" = "true" ]; then icon="●"; sstatus="${round}"; else icon="○"; sstatus="inactive"; fi
       local scost; scost=$(fmt_cost "${tok_in}" "${tok_out}")
 
       printf "  %s %s %-5s %-12s in: %6s  out: %6s  cost: %s\n" \
@@ -108,7 +108,8 @@ compact_poll() {
       local pconn ptag
       if [ "${pidx}" -lt "${prop_count}" ]; then pconn="├──"; else pconn="└──"; fi
       if [ "${pelim}" = "true" ]; then ptag="✗"; else ptag="✓"; fi
-      echo "  ${pconn} ${ptag} ${pid}  conf: ${pconf}%${pelim:+ (eliminated)}"
+	      local elim_flag=""; if [ "${pelim}" = "true" ]; then elim_flag=" (eliminated)"; fi
+      echo "  ${pconn} ${ptag} ${pid}  conf: ${pconf}%${elim_flag}"
     done < <(echo "${data}" | jq -c '.proposals[]' 2>/dev/null)
   fi
 

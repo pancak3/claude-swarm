@@ -38,11 +38,11 @@ func run() error {
 	}
 
 	timeouts := protocol.RoundTimeouts{
-		Register: parseDuration(envDefault("SWARM_TIMEOUT_REGISTER", "60s"), 60*time.Second),
-		Propose:  parseDuration(envDefault("SWARM_TIMEOUT_PROPOSE", "150s"), 150*time.Second),
-		Critique: parseDuration(envDefault("SWARM_TIMEOUT_CRITIQUE", "90s"), 90*time.Second),
-		Rebuttal: parseDuration(envDefault("SWARM_TIMEOUT_REBUTTAL", "60s"), 60*time.Second),
-		Vote:     parseDuration(envDefault("SWARM_TIMEOUT_VOTE", "300s"), 300*time.Second),
+		Register: parseDuration(envDefault("SWARM_TIMEOUT_REGISTER", "30s"), 30*time.Second),
+		Propose:  parseDuration(envDefault("SWARM_TIMEOUT_PROPOSE", "60s"), 60*time.Second),
+		Critique: parseDuration(envDefault("SWARM_TIMEOUT_CRITIQUE", "45s"), 45*time.Second),
+		Rebuttal: parseDuration(envDefault("SWARM_TIMEOUT_REBUTTAL", "30s"), 30*time.Second),
+		Vote:     parseDuration(envDefault("SWARM_TIMEOUT_VOTE", "90s"), 90*time.Second),
 	}
 
 

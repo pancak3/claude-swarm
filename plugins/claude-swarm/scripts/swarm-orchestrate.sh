@@ -134,12 +134,31 @@ if [ -f "${BUS_PID_FILE}" ]; then
   rm -f "${BUS_PID_FILE}"
 fi
 
-# ── Export default phase timeouts so the bus picks them up ──────────────────
-# These can be overridden by --phase-sizes or by setting the env var directly.
-export SWARM_TIMEOUT_REGISTER="${SWARM_TIMEOUT_REGISTER:-300s}"
-export SWARM_TIMEOUT_PROPOSE="${SWARM_TIMEOUT_PROPOSE:-150s}"
-export SWARM_TIMEOUT_VOTE="${SWARM_TIMEOUT_VOTE:-300s}"
+# ── Adaptive timeout scaling ─────────────────────────────────────────────
+# Timeouts scale with task complexity (word count) and swarm size.
+# Simple questions get short timeouts; complex designs get more time.
+# Only applies when SWARM_TIMEOUT_* env vars are not already set.
+TASK_WORDS=$(echo "${TASK_DESCRIPTION}" | wc -w)
+TASK_WORDS=${TASK_WORDS:-10}
+# Base: 5s per word for propose, 3s per word for vote, 2s per word for register.
+# Also scales with SWARM_SIZE: more sessions = more time for quorum.
+if [ -z "${SWARM_TIMEOUT_REGISTER+x}" ]; then
+  _reg_sec=$(( 20 + TASK_WORDS * 2 + SWARM_SIZE * 2 ))
+  [ "${_reg_sec}" -gt 120 ] && _reg_sec=120
+  export SWARM_TIMEOUT_REGISTER="${_reg_sec}s"
+fi
+if [ -z "${SWARM_TIMEOUT_PROPOSE+x}" ]; then
+  _pro_sec=$(( 30 + TASK_WORDS * 5 + SWARM_SIZE * 3 ))
+  [ "${_pro_sec}" -gt 300 ] && _pro_sec=300
+  export SWARM_TIMEOUT_PROPOSE="${_pro_sec}s"
+fi
+if [ -z "${SWARM_TIMEOUT_VOTE+x}" ]; then
+  _vote_sec=$(( 30 + TASK_WORDS * 3 + SWARM_SIZE * 5 ))
+  [ "${_vote_sec}" -gt 300 ] && _vote_sec=300
+  export SWARM_TIMEOUT_VOTE="${_vote_sec}s"
+fi
 export SWARM_TIMEOUT_EXECUTE="${SWARM_TIMEOUT_EXECUTE:-120s}"
+event "Adaptive timeouts: REGISTER=${SWARM_TIMEOUT_REGISTER} PROPOSE=${SWARM_TIMEOUT_PROPOSE} VOTE=${SWARM_TIMEOUT_VOTE} (${TASK_WORDS} words, ${SWARM_SIZE} sessions)"
 
 # ── Phase sizes: convert --phase-sizes to SWARM_TIMEOUT_* env vars ───────
 if [ -n "${PHASE_SIZES}" ]; then
@@ -336,7 +355,12 @@ cleanup() {
   if [ ${#SESSION_PIDS[@]} -gt 0 ]; then
     event "Stopping ${#SESSION_PIDS[@]} spawned session(s)..."
     for spid in "${SESSION_PIDS[@]}"; do
-      kill "${spid}" 2>/dev/null || true
+      kill -TERM "${spid}" 2>/dev/null || true
+    done
+    # Brief grace period for buffer flush.
+    sleep 2
+    for spid in "${SESSION_PIDS[@]}"; do
+      kill -KILL "${spid}" 2>/dev/null || true
     done
     wait "${SESSION_PIDS[@]}" 2>/dev/null || true
   fi
@@ -456,8 +480,8 @@ track_tokens "spawn" "${SWARM_SIZE}" 5
 # Wait for a quorum of sessions to register before advancing.
 # Self-vote is blocked, so ≥2 distinct proposers are required for a vote.
 # Quorum: max(2, 60% of SWARM_SIZE), or all spawned — whichever comes first.
-# Timeout from SWARM_TIMEOUT_REGISTER (default 90s).
-REG_TIMEOUT="${SWARM_TIMEOUT_REGISTER:-90s}"
+# Timeout from SWARM_TIMEOUT_REGISTER (default 30s).
+REG_TIMEOUT="${SWARM_TIMEOUT_REGISTER:-30s}"
 REG_TIMEOUT_SEC="${REG_TIMEOUT%s}"
 REG_TRIES=$(( REG_TIMEOUT_SEC * 2 ))  # 0.5s per iteration
 REQUIRED_QUORUM=$(( SWARM_SIZE * 60 / 100 ))
@@ -541,10 +565,31 @@ while true; do
 
   sleep 5
 done
+# Bus reported CLOSED — give sessions time to discover it naturally.
+# Sessions that call swarm_get_status will see CLOSED and should exit
+# (the prompt tells them to go to Step 4 when round is CLOSED/SYNTHESIS).
+# At effort=max, each API call takes 5-15s, so sessions need time to finish
+# their current call cycle before they check status and discover CLOSED.
+event "Bus closed. Waiting up to 90s for sessions to discover CLOSED and exit..."
+CLOSED_DEADLINE=$(( $(date +%s) + 90 ))
+while true; do
+  alive=0
+  for spid in "${SESSION_PIDS[@]}"; do
+    kill -0 "${spid}" 2>/dev/null && alive=$((alive + 1))
+  done
+  [ "${alive}" -eq 0 ] && { event "All sessions exited naturally after CLOSED."; break; }
+  [ "$(date +%s)" -ge "${CLOSED_DEADLINE}" ] && { event "${alive} session(s) still alive after 90s — force-killing."; break; }
+  sleep 3
+done
 
-# Force-kill any remaining sessions.
+# Force-kill stragglers: TERM first (triggers spawn.sh trap → claude gets TERM),
+# then brief grace for buffer flush, then KILL.
 for spid in "${SESSION_PIDS[@]}"; do
-  kill "${spid}" 2>/dev/null || true
+  kill -TERM "${spid}" 2>/dev/null || true
+done
+sleep 3
+for spid in "${SESSION_PIDS[@]}"; do
+  kill -KILL "${spid}" 2>/dev/null || true
 done
 wait "${SESSION_PIDS[@]}" 2>/dev/null || true
 
@@ -856,62 +901,53 @@ else:
   fi
   echo ""
 
-  # ── Session conclusions ────────────────────────────────────────────────
-  echo "═══ Session Conclusions ═══"
+  # ── Session participation (from bus data) ───────────────────────────────
+  echo "═══ Session Participation ═══"
   for ((i=1; i<=size; i++)); do
     local sid="s${i}"
-    local slog="${rundir}/${sid}.log"
     local perspective_idx=$(( (i-1) % 4 ))
     local persp="${perspectives[${perspective_idx}]}"
-
-    if [ ! -f "${slog}" ]; then
-      echo "  ── ${sid} (${persp}) ──"
-      echo "    (no log file)"
-      echo ""
-      continue
-    fi
-
     echo "  ── ${sid} (${persp}) ──"
 
-    # Strategy: find last meaningful paragraph (>80 chars, bounded by blank lines).
-    # Use awk in paragraph mode (RS='') to collect blocks, pick last substantial one.
-    local conclusion
-    conclusion=$(awk -v RS='' '
-      length($0) >= 80 { last = $0 }
-      END {
-        if (last != "") {
-          gsub(/^[[:space:]]+|[[:space:]]+$/, "", last)
-          print last
-        }
-      }
-    ' "${slog}" 2>/dev/null)
-
-    if [ -n "${conclusion}" ]; then
-      # Truncate to ~12 lines (roughly 740 chars) for readability.
-      local truncated
-      truncated=$(echo "${conclusion}" | head -c 740)
-      echo "${truncated}" | fold -s -w 74 | awk '{print "    " $0}'
-      if [ "${#conclusion}" -gt 740 ]; then
-        echo "    [...]"
-      fi
+    # Find proposals by this session from bus data.
+    local sess_props
+    sess_props=$(echo "${proposals_json}" | jq -r --arg s "${sid}" '[.[] | select(.session_id==$s)] | length' 2>/dev/null || echo "0")
+    if [ "${sess_props}" -gt 0 ]; then
+      echo "    Proposals: ${sess_props}"
+      echo "${proposals_json}" | jq -r --arg s "${sid}" '.[] | select(.session_id==$s) | "      [\(.id)] \(.approach // "?" | .[0:100])"' 2>/dev/null | head -3
     else
-      # Fallback: last heading section or last non-empty lines.
-      local last_section
-      last_section=$(grep -n "^## " "${slog}" 2>/dev/null | tail -1 | cut -d: -f1)
-      if [ -n "${last_section}" ]; then
-        tail -n +"${last_section}" "${slog}" 2>/dev/null \
-          | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' \
-          | tail -n 12 \
-          | awk '{print "    " $0}'
-      else
-        grep -v '^[[:space:]]*$' "${slog}" 2>/dev/null | tail -n 10 \
-          | awk '{print "    " $0}'
-      fi
+      echo "    Proposals: 0"
     fi
+
+    # Find votes by this session from bus data.
+    local sess_votes=0
+    local voted_for=""
+    if [ "${tally_rounds}" -gt 0 ]; then
+      for ((r=0; r<tally_rounds; r++)); do
+        local vc
+        vc=$(echo "${vote_rounds_json}" | jq -r --arg s "${sid}" ".[${r}].ballots // {} | to_entries[] | select(.value==\$s) | .key" 2>/dev/null)
+        if [ -n "${vc}" ]; then
+          sess_votes=$((sess_votes + 1))
+          voted_for="${voted_for} ${vc}"
+        fi
+      done
+    fi
+    if [ "${sess_votes}" -gt 0 ]; then
+      echo "    Voted for:${voted_for}"
+    else
+      echo "    Did not vote"
+    fi
+
+    # Show spawn.sh exit status from the minimal session log.
+    local slog="${rundir}/${sid}.log"
+    if [ -f "${slog}" ] && [ -s "${slog}" ]; then
+      grep -q "completed with exit code" "${slog}" 2>/dev/null && echo "    $(cat "${slog}")" || echo "    Status: running or killed"
+    else
+      echo "    Status: no completion marker"
+    fi
+
     echo ""
   done
-
-  # ── Session output summary ─────────────────────────────────────────────
   echo "═══ Session Outputs ═══"
   for ((i=1; i<=size; i++)); do
     local sdir="${rundir}/sessions/s${i}/output"

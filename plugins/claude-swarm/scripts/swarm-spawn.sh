@@ -86,15 +86,19 @@ if [ "${SWARM_MODE}" = "analyze" ]; then
   # Allow Bash, Read, Grep, Glob, WebSearch, WebFetch, AND all swarm-bus MCP tools.
   # mcp__swarm-bus prefix auto-allows swarm_register, submit_proposal, cast_vote, etc.
   # Write/Edit/NotebookEdit NOT in this list -> blocked in non-interactive mode.
-  EXTRA_ARGS+=(--permission-mode default)
+  # Use bypassPermissions: --allowedTools gates which tools are available,
+  # and claude -p (non-interactive) denies any tool NOT in the allowed list.
+  # Without bypassPermissions, MCP tools fail because there is no interactive prompt.
+  EXTRA_ARGS+=(--permission-mode bypassPermissions)
   EXTRA_ARGS+=(--allowedTools "Bash,Read,Grep,Glob,WebSearch,WebFetch,mcp__swarm-bus")
 elif [ "${SWARM_MODE}" = "implement" ]; then
 	EXTRA_ARGS+=(--dangerously-skip-permissions)
 	EXTRA_ARGS+=(--allow-dangerously-skip-permissions)
 	EXTRA_ARGS+=(--permission-mode bypassPermissions)
 fi
-# In analyze mode: no bypassPermissions — Write/Edit will be denied
-# because permission prompts cannot be answered in non-interactive mode.
+# In analyze mode: --allowedTools restricts to read-only + MCP tools.
+# Write/Edit/NotebookEdit are NOT in the allowed list, so they remain blocked
+# even with bypassPermissions.
 if [ -n "${SWARM_MODEL}" ]; then
   EXTRA_ARGS+=(--model "${SWARM_MODEL}")
 fi
@@ -104,54 +108,35 @@ fi
 if [ -n "${SWARM_SETTINGS}" ]; then
   EXTRA_ARGS+=(--settings "${SWARM_SETTINGS}")
 fi
-# Capture claude output to a temp file so we can parse token counts after completion.
-CLAUDE_OUTPUT_TMP=$(mktemp)
-trap 'rm -f "${CLAUDE_OUTPUT_TMP}"' EXIT
-
+# claude -p reopens stdout/stderr to internal task files, so shell-level
+# redirects are bypassed. Session contributions are captured by the bus API
+# (proposals, critiques, votes) — the orchestrator reads bus data for
+# synthesis. We emit a completion marker for the session log after claude exits.
+#
+# Run in background so we can trap signals and forward them to the child.
 claude -p "Begin parliamentary deliberation. Register with the swarm bus (session_id=${SESSION_ID}, perspective=${PERSPECTIVE})." \
   --append-system-prompt "${SYSTEM_PROMPT}" \
   --mcp-config "${BUS_MCP_CONFIG}" \
   "${EXTRA_ARGS[@]}" \
   --session-id "${SESSION_UUID}" \
-  < /dev/null 2>&1 | tee "${CLAUDE_OUTPUT_TMP}"
+  < /dev/null > /dev/null 2>&1 &
+CLAUDE_PID=$!
 
-CLAUDE_EXIT_CODE=${PIPESTATUS[0]}
-
-# Report token usage to the bus if we have an output file.
-if [ -s "${CLAUDE_OUTPUT_TMP}" ]; then
-  BUS_BASE_URL=$(python3 -c "
-import json
-with open('${BUS_MCP_CONFIG}') as f:
-    cfg = json.load(f)
-url = ''
-for svc in cfg.get('mcpServers', {}).values():
-    u = svc.get('url', '')
-    if '/mcp' in u:
-        url = u.replace('/mcp', '')
-        break
-print(url)
-" 2>/dev/null || echo "")
-
-  if [ -n "${BUS_BASE_URL}" ]; then
-    # Parse token counts from claude output.
-    # claude prints lines like:
-    #   Input tokens: 12345
-    #   Output tokens: 6789
-    TOKENS_IN=$(grep -oE "Input tokens: [0-9]+" "${CLAUDE_OUTPUT_TMP}" 2>/dev/null | tail -1 | grep -oE "[0-9]+" || echo "0")
-    TOKENS_OUT=$(grep -oE "Output tokens: [0-9]+" "${CLAUDE_OUTPUT_TMP}" 2>/dev/null | tail -1 | grep -oE "[0-9]+" || echo "0")
-    TOKENS_IN=${TOKENS_IN:-0}
-    TOKENS_OUT=${TOKENS_OUT:-0}
-
-    if [ "${TOKENS_IN}" != "0" ] || [ "${TOKENS_OUT}" != "0" ]; then
-      curl -sf --max-time 3 \
-        -X POST \
-        -H "Content-Type: application/json" \
-        -d "{\"tokens_in\":${TOKENS_IN},\"tokens_out\":${TOKENS_OUT}}" \
-        "${BUS_BASE_URL}/session/${SESSION_ID}/tokens" \
-        >/dev/null 2>&1 || true
-      echo "[swarm-spawn] ${SESSION_ID}: tokens_in=${TOKENS_IN} tokens_out=${TOKENS_OUT}" >&2
-    fi
+# Forward signals to claude child so it's not orphaned when spawn.sh is killed.
+_cleanup_child() {
+  # Write a marker so the orchestrator knows this session was killed.
+  echo "[swarm-spawn] ${SESSION_ID}: killed (signal received before completion)" >&2
+  if [ -n "${CLAUDE_PID:-}" ] && kill -0 "${CLAUDE_PID}" 2>/dev/null; then
+    kill -TERM "${CLAUDE_PID}" 2>/dev/null || true
+    sleep 2
+    kill -KILL "${CLAUDE_PID}" 2>/dev/null || true
   fi
-fi
+  exit 143  # 128 + SIGTERM
+}
+trap _cleanup_child INT TERM
 
-exit ${CLAUDE_EXIT_CODE}
+wait "${CLAUDE_PID}" 2>/dev/null
+CLAUDE_EXIT_CODE=$?
+trap - INT TERM  # child exited cleanly, remove trap
+
+echo "[swarm-spawn] ${SESSION_ID}: completed with exit code ${CLAUDE_EXIT_CODE}"
