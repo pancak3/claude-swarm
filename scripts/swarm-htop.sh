@@ -88,7 +88,7 @@ compact_poll() {
       printf "  %s %s %-5s %-12s %5sw\n" \
         "${conn}" "${icon}" "${sid}" "${spersp}" \
         "${swords}"
-    done < <(echo "${data}" | jq -c '.sessions | sort_by(.id)[]' 2>/dev/null)
+    done < <(echo "${data}" | jq -c '.sessions | sort_by(.id | ltrimstr("s") | tonumber)[]' 2>/dev/null)
   fi
 
   # Show expected-but-unregistered sessions.
@@ -312,8 +312,37 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 
   echo ""
   echo "[$(date +%H:%M:%S)] htop: polling bus :${BUS_PORT}/status every 2s"
+  echo ""
+
+  # ── In-place dashboard loop ──────────────────────────────────────────────
+  # Capture output of each poll, then redraw in-place using ANSI escapes
+  # so the terminal shows a live-updating dashboard instead of scrolling.
+  _prev_lines=0 _first=1
+  _saved_stty=$(stty -g 2>/dev/null || echo "")
+  trap 'stty "${_saved_stty}" 2>/dev/null || stty sane 2>/dev/null; echo ""' EXIT
+
   while true; do
-    compact_poll "${BUS_PORT}"
+    _output=$(compact_poll "${BUS_PORT}" 2>/dev/null || true)
+
+    if [ "${_first}" -eq 1 ]; then
+      _first=0
+    else
+      # Move cursor back up to overwrite previous poll block.
+      if [ "${_prev_lines}" -gt 0 ]; then
+        printf '\033[%dA' "${_prev_lines}"
+      fi
+    fi
+
+    # Print this poll's output.
+    printf '%s\n' "${_output}"
+
+    # If new output has fewer lines than previous, clear trailing lines.
+    _cur_lines=$(echo "${_output}" | wc -l)
+    if [ "${_cur_lines}" -lt "${_prev_lines}" ]; then
+      printf '\033[J'
+    fi
+    _prev_lines="${_cur_lines}"
+
     sleep 2
   done
 fi
