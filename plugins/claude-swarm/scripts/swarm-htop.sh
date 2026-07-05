@@ -206,7 +206,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     fi
 
     # Remove empty lines and deduplicate by port.
-    echo "${discovered}" | grep -v '^$' | sort -t$'\t' -k1 -u
+    echo "${discovered}" | grep -v '^$' | sort -t$'\t' -k1 -u || true
   }
 
   # ── Interactive arrow-key selector (up/down + enter) ──────────────────────
@@ -283,7 +283,8 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 
   # ── Discover buses ────────────────────────────────────────────────────────
   BUS_LIST=$(discover_buses)
-  BUS_COUNT=$(echo "${BUS_LIST}" | grep -c '^' 2>/dev/null || echo 0)
+  BUS_COUNT=$(echo "${BUS_LIST}" | sed '/^$/d' | wc -l)
+  BUS_COUNT=${BUS_COUNT// /}
 
   if [ "${BUS_COUNT}" -eq 0 ]; then
     echo "[$(date +%H:%M:%S)] htop: no swarm-bus instances found."
@@ -333,6 +334,11 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 
     if [ "${_bus_ok}" -ne 0 ] || [ -z "${_output}" ]; then
       # Bus unreachable.
+      if [ "${_first}" -eq 1 ]; then
+        # First poll already dead — bus died between discovery and start.
+        echo "[$(date +%H:%M:%S)] htop: bus :${BUS_PORT} is no longer reachable (swarm likely finished)."
+        break
+      fi
       _bus_gone=$((_bus_gone + 1))
       if [ "${_bus_gone}" -ge 3 ]; then
         printf '\033[J'
