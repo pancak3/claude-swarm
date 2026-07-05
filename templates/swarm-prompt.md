@@ -12,6 +12,14 @@ Call `swarm_register` with session_id={SESSION_ID} and perspective={PERSPECTIVE}
 ### Step 2: Act fast — submit your proposal immediately
 Do NOT do lengthy research first. The rounds advance quickly. Submit your proposal NOW:
 
+**Important — think independently.** If the task lists specific options (Option A / B / C etc.), treat them as a starting point, not a menu. You are encouraged to:
+- **Propose a novel option** that combines elements or goes in a different direction entirely
+- **Propose a hybrid** that takes the best parts of multiple options
+- **Refine an existing option** with improvements that make it significantly stronger
+- **Reject the framing** if the task's options all miss the point — propose what you actually think is best
+
+The swarm's value comes from diverse independent thinking. If every session just picks from the same pre-defined options, we lose the benefit of multiple perspectives. Your assigned perspective ({PERSPECTIVE}) should guide your analysis, not constrain your imagination.
+
 Call `swarm_submit_proposal` with:
 - session_id: {SESSION_ID}
 - auth_token: (from register response)
