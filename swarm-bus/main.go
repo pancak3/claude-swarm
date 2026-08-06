@@ -38,11 +38,11 @@ func run() error {
 	}
 
 	timeouts := protocol.RoundTimeouts{
-		Register: parseDuration(envDefault("SWARM_TIMEOUT_REGISTER", "30s"), 30*time.Second),
-		Propose:  parseDuration(envDefault("SWARM_TIMEOUT_PROPOSE", "60s"), 60*time.Second),
-		Critique: parseDuration(envDefault("SWARM_TIMEOUT_CRITIQUE", "45s"), 45*time.Second),
-		Rebuttal: parseDuration(envDefault("SWARM_TIMEOUT_REBUTTAL", "30s"), 30*time.Second),
-		Vote:     parseDuration(envDefault("SWARM_TIMEOUT_VOTE", "90s"), 90*time.Second),
+		Register: parseDuration(envDefault("SWARM_TIMEOUT_REGISTER", "60s"), 60*time.Second),
+		Propose:  parseDuration(envDefault("SWARM_TIMEOUT_PROPOSE", "180s"), 180*time.Second),
+		Critique: parseDuration(envDefault("SWARM_TIMEOUT_CRITIQUE", "60s"), 60*time.Second),
+		Rebuttal: parseDuration(envDefault("SWARM_TIMEOUT_REBUTTAL", "45s"), 45*time.Second),
+		Vote:     parseDuration(envDefault("SWARM_TIMEOUT_VOTE", "120s"), 120*time.Second),
 	}
 
 
@@ -78,11 +78,48 @@ func run() error {
 	server.AddTool(tools.RegisterContractTool(machine))
 	server.AddTool(tools.GetContractTool(machine))
 	server.AddTool(tools.ReportTokensTool(machine))
+	server.AddTool(tools.RoundDoneTool(machine))
 
 	// Start round advancement goroutine.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go roundAdvancer(ctx, machine)
+
+	// Safety timeout: absolute backstop (600s per round). Fires only if the
+	// event-driven mechanism breaks (e.g., MCP deadlock, session that never
+	// calls swarm_round_done and never gets pruned).
+	go func() {
+		safetyTimeout := parseDuration(envDefault("SWARM_SAFETY_TIMEOUT", "600s"), 600*time.Second)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		var lastRound protocol.Round
+		var roundStuckAt time.Time
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				current := machine.RoundManager.Current()
+				if current == protocol.RoundClosed {
+					return
+				}
+				if current != lastRound {
+					lastRound = current
+					roundStuckAt = time.Now()
+				} else if time.Since(roundStuckAt) > safetyTimeout {
+					fmt.Fprintf(os.Stderr, "[swarm-bus] SAFETY TIMEOUT: round %s stuck for %v — force-advancing\n",
+						current, safetyTimeout)
+					// Force-mark all remaining active sessions as done.
+					for _, sid := range machine.SessionRegistry.GetActive() {
+						machine.MarkSessionDone(sid)
+					}
+					machine.SessionRegistry.PruneStale(1 * time.Second)
+					// Signal roundAdvancer to check again.
+					machine.SubmitCh <- struct{}{}
+				}
+			}
+		}
+	}()
 
 	// Handle graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
@@ -168,11 +205,11 @@ func run() error {
 	})
 
 	// POST /session/{id}/tokens — report token usage for a session.
+	// POST /session/{id}/dead   — orchestrator declares a session dead (PID exited).
 	mux.HandleFunc("/session/", func(w http.ResponseWriter, r *http.Request) {
-		// Only handle /session/{id}/tokens sub-path.
 		trimmed := strings.TrimPrefix(r.URL.Path, "/session/")
 		parts := strings.SplitN(trimmed, "/", 2)
-		if len(parts) != 2 || parts[1] != "tokens" {
+		if len(parts) < 2 {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -181,28 +218,42 @@ func run() error {
 			http.Error(w, `{"error":"missing session id"}`, http.StatusBadRequest)
 			return
 		}
+		subPath := parts[1]
 
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		var body struct {
-			TokensIn  int64 `json:"tokens_in"`
-			TokensOut int64 `json:"tokens_out"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
-			return
-		}
+		switch subPath {
+		case "tokens":
+			var body struct {
+				TokensIn  int64 `json:"tokens_in"`
+				TokensOut int64 `json:"tokens_out"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+				return
+			}
+			if !machine.SessionRegistry.UpdateTokens(sessionID, body.TokensIn, body.TokensOut) {
+				http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 
-		if !machine.SessionRegistry.UpdateTokens(sessionID, body.TokensIn, body.TokensOut) {
-			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
-			return
-		}
+		case "dead":
+			// Orchestrator notifies bus that a session's PID has exited.
+			// Mark the session as done so it doesn't block round advancement.
+			machine.SessionRegistry.Unregister(sessionID)
+			machine.MarkSessionDone(sessionID)
+			fmt.Fprintf(os.Stderr, "[swarm-bus] session %q declared dead by orchestrator\n", sessionID)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
 	})
 
 	// Bus process cleanup is handled by the orchestrator script.
@@ -250,59 +301,40 @@ func limitRequestSize(next http.Handler) http.Handler {
 	})
 }
 
-const minAdvanceBackoff = 5 * time.Second
 
 func roundAdvancer(ctx context.Context, machine *state.Machine) {
-	var timer *time.Timer
-	resetTimer := func(advanceFailed bool) {
-		if timer != nil {
-			timer.Stop()
-		}
-		var remaining time.Duration
-		if advanceFailed {
-			// advanceRound didn't advance — avoid tight spin loop by backing off.
-			remaining = minAdvanceBackoff
-		} else {
-			remaining = machine.RoundManager.TimeRemaining()
-			if remaining <= 0 {
-				remaining = minAdvanceBackoff
-			}
-		}
-		timer = time.NewTimer(remaining)
-	}
+	// Event-driven round advancement: rounds advance when all active sessions
+	// have signaled completion (via swarm_round_done) and the round's submission
+	// quorum is met. No wall-clock timers — sessions self-report when done.
+	//
+	// Safety timeout: a goroutine fires after 600s per round as an absolute
+	// backstop. It should never fire during normal operation; it exists only
+	// for catastrophic failure (bus bug, network partition, MCP deadlock).
 
-	resetTimer(false)
 	for {
 		select {
 		case <-ctx.Done():
-			if timer != nil {
-				timer.Stop()
-			}
 			return
 
-		case <-timer.C:
+		case <-machine.SubmitCh:
 			current := machine.RoundManager.Current()
 			if current == protocol.RoundClosed {
-				if timer != nil {
-					timer.Stop()
-				}
 				return
 			}
 
-			machine.SessionRegistry.PruneStale(60 * time.Second)
-
-			advanceFailed := false
-			if machine.RoundManager.IsExpired() {
-				prevRound := current
-				advanceRound(machine)
-				advanceFailed = machine.RoundManager.Current() == prevRound
+			// Prune sessions inactive for >180s (stuck sessions that
+			// can't call swarm_round_done).
+			pruned := machine.SessionRegistry.PruneStale(180 * time.Second)
+			if pruned > 0 {
+				fmt.Fprintf(os.Stderr, "[swarm-bus] pruned %d stale session(s)\n", pruned)
 			}
-			resetTimer(advanceFailed)
 
-		case <-machine.SubmitCh:
-			// A session submitted data — eagerly check if we can advance early.
-			current := machine.RoundManager.Current()
-			if current == protocol.RoundClosed || current == protocol.RoundExecute || current == protocol.RoundSynthesis {
+			// RoundRegistering, RoundExecute, and RoundSynthesis
+			// advance immediately — no swarm_round_done needed.
+			if current == protocol.RoundRegistering ||
+				current == protocol.RoundExecute ||
+				current == protocol.RoundSynthesis {
+				advanceRound(machine)
 				continue
 			}
 
@@ -311,30 +343,36 @@ func roundAdvancer(ctx context.Context, machine *state.Machine) {
 				continue
 			}
 
-			shouldAdvance := false
+			// Check if all active sessions have signaled done.
+			if !machine.AllActiveSessionsDone() {
+				// Not all done yet — wait for more signals.
+				continue
+			}
 
+			// All sessions done — check if the round's submission quorum is met.
+			shouldAdvance := false
 			if current == protocol.RoundVote {
-				// VOTE phase: advance when >=75% of active sessions have voted.
-				// 100% is ideal but max-effort sessions are slow; 75% gives a
-				// strong consensus while tolerating one straggler.
 				voteCount := len(machine.GetAllVotes())
 				quorum := active * 3 / 4
 				if quorum < 1 { quorum = 1 }
-				if voteCount >= quorum {
-					shouldAdvance = true
-				}
+				shouldAdvance = voteCount >= quorum
 			} else {
-				// Other phases: use total submission count.
 				submitted := machine.SubmissionCount()
-				if submitted >= active {
-					shouldAdvance = true
-				}
+				quorum := active
+				if quorum < 2 { quorum = 2 }
+				shouldAdvance = submitted >= quorum
 			}
 
 			if shouldAdvance {
-				machine.SessionRegistry.PruneStale(60 * time.Second)
 				advanceRound(machine)
-				resetTimer(false)
+			} else {
+				// Quorum not met even though all sessions are done.
+				// This means sessions abstained — advance anyway.
+				if machine.SubmissionCount() >= 1 || current == protocol.RoundVote {
+					fmt.Fprintf(os.Stderr, "[swarm-bus] all sessions done but quorum not met (%d submissions, %d active) — advancing\n",
+						machine.SubmissionCount(), active)
+					advanceRound(machine)
+				}
 			}
 		}
 	}
@@ -347,29 +385,20 @@ func advanceRound(machine *state.Machine) {
 	case protocol.RoundRegistering:
 		if machine.SessionRegistry.ActiveCount() >= 1 {
 			machine.RoundManager.Advance()
-		} else if machine.RoundManager.IsExpired() {
-			// REGISTERING timed out with zero sessions — abort to CLOSED.
-			fmt.Fprintf(os.Stderr, "[swarm-bus] ERROR: REGISTERING round timed out with 0 sessions registered — aborting\n")
-			machine.RoundManager.ForceRound(protocol.RoundClosed)
+		machine.ResetDoneSessions()
 		}
 	case protocol.RoundPropose:
+		// Event-driven: roundAdvancer already verified all sessions done
+		// AND quorum met. Just advance.
 		submitted := machine.SubmissionCount()
-		if submitted < 2 {
-			// Deadlock breaker: if exactly 1 proposal after 3+ retries,
-			// advance anyway so the pipeline doesn't stall forever.
-			deadlock := machine.RoundManager.DeadlockCount()
-			if submitted == 1 && deadlock >= 3 {
-				fmt.Fprintf(os.Stderr, "[swarm-bus] PROPOSE stuck with 1 proposal after %d retries — advancing\n", deadlock)
-				machine.RoundManager.Advance()
-				return
-			}
-			machine.RoundManager.IncrementDeadlockCount()
-			return // need at least 2 proposals to proceed
-		}
+		active := machine.SessionRegistry.ActiveCount()
+		fmt.Fprintf(os.Stderr, "[swarm-bus] PROPOSE: %d proposals from %d active sessions — advancing\n", submitted, active)
 		machine.RoundManager.Advance()
+		machine.ResetDoneSessions()
 	case protocol.RoundCritique:
 		machine.EliminateByFatalFlaw(0.5)
 		machine.RoundManager.Advance()
+		machine.ResetDoneSessions()
 	case protocol.RoundVote:
 		voterPrefs := machine.GetVoterPrefs()
 		activeProposals := machine.ActiveProposalIDs()
@@ -379,16 +408,12 @@ func advanceRound(machine *state.Machine) {
 				machine.SetVoteResult(result)
 			}
 		}
-		// Retry on 0 votes: extend the round up to 2 times so slow
-		// max-effort sessions have time to read proposals and vote.
-		if len(voterPrefs) == 0 && machine.RoundManager.DeadlockCount() < 2 {
-			machine.RoundManager.IncrementDeadlockCount()
-			fmt.Fprintf(os.Stderr, "[swarm-bus] VOTE round had 0 votes — retrying (attempt %d/2)\n", machine.RoundManager.DeadlockCount())
-			return // don't advance; timer will fire again
-		}
+		fmt.Fprintf(os.Stderr, "[swarm-bus] VOTE: %d votes, %d proposals — advancing\n", len(voterPrefs), len(activeProposals))
 		machine.RoundManager.Advance()
+		machine.ResetDoneSessions()
 	case protocol.RoundExecute:
 		machine.RoundManager.Advance()
+		machine.ResetDoneSessions()
 	case protocol.RoundSynthesis:
 		voteResult := machine.GetVoteResult()
 		if voteResult != nil {
@@ -396,10 +421,12 @@ func advanceRound(machine *state.Machine) {
 				voteResult.Winner, len(voteResult.RoundResults))
 		}
 		machine.RoundManager.Advance()
+		machine.ResetDoneSessions()
 	case protocol.RoundClosed:
 		return
 	default:
 		machine.RoundManager.Advance()
+		machine.ResetDoneSessions()
 	}
 
 	newRound := machine.RoundManager.Current()

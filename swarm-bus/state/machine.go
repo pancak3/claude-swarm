@@ -25,6 +25,8 @@ type Machine struct {
 	RoundManager        *RoundManager
 	SubmitCh            chan struct{} // buffered(1) — signals round advancer of submissions
 	SessionRegistry     *SessionRegistry
+	doneMu              sync.Mutex
+	doneSessions        map[string]bool // sessions that called swarm_round_done
 	proposals           map[string]*protocol.Proposal
 	critiques           map[string]*protocol.Critique
 	critiqueIndex       map[string][]*protocol.Critique
@@ -52,7 +54,14 @@ func NewMachine(taskID string, brief *protocol.TaskBrief, timeouts protocol.Roun
 		voterPrefs:          make([]protocol.VoterPref, 0, 16),
 		eliminatedProposals: make(map[string]bool),
 		contracts:           make([]*protocol.ContractEntry, 0),
+		doneSessions:        make(map[string]bool),
 	}
+}
+
+// SignalSubmit sends a non-blocking signal on the submit channel.
+// Exported so tools (e.g., RegisterTool) can wake the event-driven roundAdvancer.
+func (m *Machine) SignalSubmit() {
+	m.signalSubmit()
 }
 
 // signalSubmit sends a non-blocking signal on the submit channel.
@@ -345,6 +354,42 @@ func (m *Machine) SubmissionCount() int {
 // GetDeadlockRetries returns the deadlock retry count.
 func (m *Machine) GetDeadlockRetries() int {
 	return m.RoundManager.DeadlockCount()
+}
+
+// MarkSessionDone records that a session has completed the current round.
+// Returns true if this was the first time the session signaled done.
+func (m *Machine) MarkSessionDone(sessionID string) bool {
+	m.doneMu.Lock()
+	defer m.doneMu.Unlock()
+	if m.doneSessions[sessionID] {
+		return false // already done
+	}
+	m.doneSessions[sessionID] = true
+	m.signalSubmit() // trigger advancement check
+	return true
+}
+
+// ResetDoneSessions clears the done-sessions set (called on round advance).
+func (m *Machine) ResetDoneSessions() {
+	m.doneMu.Lock()
+	defer m.doneMu.Unlock()
+	m.doneSessions = make(map[string]bool)
+}
+
+// DoneSessionCount returns how many sessions have signaled done.
+func (m *Machine) DoneSessionCount() int {
+	m.doneMu.Lock()
+	defer m.doneMu.Unlock()
+	return len(m.doneSessions)
+}
+
+// AllActiveSessionsDone returns true when all active sessions have signaled done.
+func (m *Machine) AllActiveSessionsDone() bool {
+	active := m.SessionRegistry.ActiveCount()
+	if active == 0 {
+		return false
+	}
+	return m.DoneSessionCount() >= active
 }
 
 // RegisterContract adds a contract entry (module/class name declaration).

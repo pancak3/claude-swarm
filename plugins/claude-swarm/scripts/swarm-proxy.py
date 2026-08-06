@@ -14,9 +14,21 @@ import os
 import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 
 import urllib.request
 import urllib.error
+
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """HTTPServer with per-request threading and a large connection backlog.
+
+    Without this, Python's default TCPServer (backlog=5, single-threaded)
+    rejects concurrent sessions during spawn bursts — the first session blocks
+    the handler, 5 connections queue, and the rest get TCP RST.
+    """
+    request_queue_size: int = 256
+    daemon_threads: bool = True
 
 CONFIG_FILE = os.environ.get("SWARM_PROXY_CONFIG", "")
 UPSTREAM = os.environ.get("SWARM_PROXY_UPSTREAM", "https://api.deepseek.com/anthropic")
@@ -125,7 +137,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 0  # 0 = random port
-    server = HTTPServer(("127.0.0.1", port), ProxyHandler)
+    server = ThreadedHTTPServer(("127.0.0.1", port), ProxyHandler)
     actual_port = server.socket.getsockname()[1]
     print(f"SWARM_PROXY_PORT={actual_port}", flush=True)
     print(f"[swarm-proxy] listening on 127.0.0.1:{actual_port}, upstream={UPSTREAM}", file=sys.stderr, flush=True)

@@ -38,13 +38,13 @@ func GetStatusTool(machine *state.Machine) (*mcp.Tool, mcp.ToolHandler) {
 
 		machine.SessionRegistry.Heartbeat(sessionID)
 		status := fmt.Sprintf(
-			"Task: %s\nRound: %s\nTime remaining: %s\nSessions active: %d\nSubmissions received: %d\nDeadlock retries: %d",
+			"Task: %s\nRound: %s\nSessions active: %d\nSessions done: %d\nSubmissions received: %d\nTime remaining: %s",
 			machine.TaskID,
 			machine.RoundManager.Current(),
-			machine.RoundManager.TimeRemaining(),
 			machine.SessionRegistry.ActiveCount(),
+			machine.DoneSessionCount(),
 			machine.SubmissionCount(),
-			machine.GetDeadlockRetries(),
+			machine.RoundManager.TimeRemaining(),
 		)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: status}},

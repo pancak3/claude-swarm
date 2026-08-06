@@ -47,6 +47,10 @@ func RegisterTool(machine *state.Machine) (*mcp.Tool, mcp.ToolHandler) {
 			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("registration failed: %v", err)}}}, nil
 		}
 
+		// Wake the event-driven roundAdvancer — registration should
+		// trigger the REGISTERING → PROPOSE transition immediately.
+		machine.SignalSubmit()
+
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{
 				Text: fmt.Sprintf("Registered as session %q. Auth token: %s. Task: %s. Swarm size: %d. Round: %s.",

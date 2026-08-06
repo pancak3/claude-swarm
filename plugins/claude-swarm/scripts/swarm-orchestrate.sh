@@ -465,6 +465,11 @@ for ((i=1; i<=SWARM_SIZE; i++)); do
 
   SESSION_PIDS+=($!)
 
+  # Stagger spawns by a small interval to prevent TCP SYN floods
+  # against the API proxy (even with a threaded proxy, launching 28
+  # Node.js processes simultaneously can cause connection storms).
+  sleep 0.05
+
   # Throttle at MAX_PARALLEL: count actual background jobs.
   while true; do
     JOBS=$(jobs -rp | wc -l)
@@ -553,10 +558,24 @@ while true; do
     break
   fi
 
-  # Count alive PIDs.
+  # Count alive PIDs and notify bus of dead sessions.
   alive=0
-  for spid in "${SESSION_PIDS[@]}"; do
-    kill -0 "${spid}" 2>/dev/null && alive=$((alive + 1))
+  for ((si=0; si<${#SESSION_PIDS[@]}; si++)); do
+    spid="${SESSION_PIDS[si]}"
+    sid="s$((si+1))"
+    if kill -0 "${spid}" 2>/dev/null; then
+      alive=$((alive + 1))
+    else
+      # Session PID is dead — notify bus so it doesn't block round advancement.
+      # Avoid repeat notifications by checking whether we already reported it.
+      dead_file="${RUN_DIR}/sessions/${sid}/.dead_reported"
+      if [ ! -f "${dead_file}" ]; then
+        curl -sf --max-time 2 -X POST "http://127.0.0.1:${BUS_PORT}/session/${sid}/dead" >/dev/null 2>&1 || true
+        mkdir -p "$(dirname "${dead_file}")" 2>/dev/null
+        touch "${dead_file}"
+        event "Session ${sid} (PID ${spid}) exited — notified bus."
+      fi
+    fi
   done
   if [ "${alive}" -eq 0 ]; then
     event "All ${#SESSION_PIDS[@]} session PIDs exited."
@@ -570,15 +589,15 @@ done
 # (the prompt tells them to go to Step 4 when round is CLOSED/SYNTHESIS).
 # At effort=max, each API call takes 5-15s, so sessions need time to finish
 # their current call cycle before they check status and discover CLOSED.
-event "Bus closed. Waiting up to 90s for sessions to discover CLOSED and exit..."
-CLOSED_DEADLINE=$(( $(date +%s) + 90 ))
+event "Bus closed. Waiting up to 180s for sessions to discover CLOSED and exit..."
+CLOSED_DEADLINE=$(( $(date +%s) + 180 ))
 while true; do
   alive=0
   for spid in "${SESSION_PIDS[@]}"; do
     kill -0 "${spid}" 2>/dev/null && alive=$((alive + 1))
   done
   [ "${alive}" -eq 0 ] && { event "All sessions exited naturally after CLOSED."; break; }
-  [ "$(date +%s)" -ge "${CLOSED_DEADLINE}" ] && { event "${alive} session(s) still alive after 90s — force-killing."; break; }
+  [ "$(date +%s)" -ge "${CLOSED_DEADLINE}" ] && { event "${alive} session(s) still alive after 180s — force-killing."; break; }
   sleep 3
 done
 
