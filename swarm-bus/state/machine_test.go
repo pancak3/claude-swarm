@@ -140,6 +140,134 @@ func TestSelfVotePrevention(t *testing.T) {
 	}
 }
 
+func TestSubmitVoteDuplicateSession(t *testing.T) {
+	m := newTestMachine()
+	m.SessionRegistry.Register("s1", "correctness")
+	m.SessionRegistry.Register("s2", "simplicity")
+
+	// Advance to PROPOSE so s2 can submit a proposal (owned by s2, so s1's
+	// vote for it is not a self-vote).
+	m.RoundManager.Advance()
+	m.SubmitProposal(&protocol.Proposal{SessionID: "s2", Approach: "a", Architecture: "b", Confidence: 80})
+	ids := m.ActiveProposalIDs()
+	if len(ids) != 1 {
+		t.Fatalf("active proposals = %d, want 1", len(ids))
+	}
+
+	// Advance to VOTE round (PROPOSE → CRITIQUE → REBUTTAL → VOTE).
+	for i := 0; i < 3; i++ {
+		m.RoundManager.Advance()
+	}
+	if m.RoundManager.Current() != protocol.RoundVote {
+		t.Fatalf("expected VOTE round, got %s", m.RoundManager.Current())
+	}
+
+	// First vote from s1 succeeds.
+	if err := m.SubmitVote(&protocol.Vote{ID: "v1", SessionID: "s1", RankedVotes: ids}); err != nil {
+		t.Fatalf("first vote failed: %v", err)
+	}
+
+	// A second vote from the same session (new ID — split-brain re-submission)
+	// must be rejected, otherwise the ballot would be double-counted.
+	err := m.SubmitVote(&protocol.Vote{ID: "v2", SessionID: "s1", RankedVotes: ids})
+	if err == nil {
+		t.Fatal("expected error on duplicate session vote")
+	}
+
+	// The voter-preference list must still contain exactly one s1 ballot.
+	if got := len(m.GetVoterPrefs()); got != 1 {
+		t.Errorf("voter prefs = %d, want 1 (no double-count)", got)
+	}
+}
+
+func TestApplyEvidenceGate(t *testing.T) {
+	m := newTestMachine()
+	m.SessionRegistry.Register("s1", "correctness")
+	m.SessionRegistry.Register("s2", "simplicity")
+	m.SessionRegistry.Register("s3", "performance")
+
+	// PROPOSE: s1 submits a proposal with evidence claims.
+	m.RoundManager.Advance()
+	m.SubmitProposal(&protocol.Proposal{
+		ID:           "p1",
+		SessionID:    "s1",
+		Approach:     "a",
+		Architecture: "b",
+		Confidence:   80,
+		Evidence: []protocol.Claim{
+			{ID: "c1", Text: "claim 1"},
+			{ID: "c2", Text: "claim 2"},
+		},
+	})
+	ids := m.ActiveProposalIDs()
+	if len(ids) != 1 {
+		t.Fatalf("active proposals = %d, want 1", len(ids))
+	}
+	winner := ids[0]
+
+	// CRITIQUE: s2 and s3 both refute c1 (and s2 refutes c2).
+	m.RoundManager.Advance()
+	m.SubmitCritique(&protocol.Critique{
+		ID:               "c-s2",
+		SessionID:        "s2",
+		TargetProposalID: winner,
+		ClaimVerdicts: map[string]protocol.ClaimVerdict{
+			"c1": protocol.VerdictRefuted,
+			"c2": protocol.VerdictRefuted,
+		},
+	})
+	m.SubmitCritique(&protocol.Critique{
+		ID:               "c-s3",
+		SessionID:        "s3",
+		TargetProposalID: winner,
+		ClaimVerdicts: map[string]protocol.ClaimVerdict{
+			"c1": protocol.VerdictRefuted,
+		},
+	})
+
+	// Set a vote result declaring `winner` the winner, then apply the gate.
+	m.SetVoteResult(&protocol.TallyResult{Winner: winner})
+	reason := m.ApplyEvidenceGate(0.5)
+	if reason == "" {
+		t.Fatal("expected evidence gate to fire (all claims refuted)")
+	}
+	if got := m.GetVoteResult().Winner; got != "" {
+		t.Errorf("winner = %q, want empty (UNDECIDED)", got)
+	}
+}
+
+func TestApplyEvidenceGateBelowThreshold(t *testing.T) {
+	m := newTestMachine()
+	m.SessionRegistry.Register("s1", "correctness")
+	m.SessionRegistry.Register("s2", "simplicity")
+	m.SessionRegistry.Register("s3", "performance")
+
+	m.RoundManager.Advance()
+	m.SubmitProposal(&protocol.Proposal{
+		ID: "p1", SessionID: "s1", Approach: "a", Architecture: "b", Confidence: 80,
+		Evidence: []protocol.Claim{{ID: "c1", Text: "claim 1"}, {ID: "c2", Text: "claim 2"}},
+	})
+	winner := m.ActiveProposalIDs()[0]
+
+	m.RoundManager.Advance()
+	m.SubmitCritique(&protocol.Critique{
+		ID: "c-s2", SessionID: "s2", TargetProposalID: winner,
+		ClaimVerdicts: map[string]protocol.ClaimVerdict{"c1": protocol.VerdictVerifiable},
+	})
+	m.SubmitCritique(&protocol.Critique{
+		ID: "c-s3", SessionID: "s3", TargetProposalID: winner,
+		ClaimVerdicts: map[string]protocol.ClaimVerdict{"c1": protocol.VerdictVerifiable},
+	})
+
+	m.SetVoteResult(&protocol.TallyResult{Winner: winner})
+	if reason := m.ApplyEvidenceGate(0.5); reason != "" {
+		t.Fatalf("gate fired unexpectedly: %s", reason)
+	}
+	if got := m.GetVoteResult().Winner; got != winner {
+		t.Errorf("winner = %q, want %q (below threshold)", got, winner)
+	}
+}
+
 func TestContractRegistry(t *testing.T) {
 	m := newTestMachine()
 	m.RegisterContract(protocol.ContractEntry{

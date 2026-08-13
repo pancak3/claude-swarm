@@ -40,6 +40,19 @@ func SubmitProposalTool(machine *state.Machine) (*mcp.Tool, mcp.ToolHandler) {
 				"confidence": map[string]interface{}{
 					"type": "integer", "description": "Confidence level (0-100) in this proposal",
 				},
+				"evidence": map[string]interface{}{
+					"type": "array",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"id":     map[string]interface{}{"type": "string", "description": "Short claim identifier"},
+							"text":   map[string]interface{}{"type": "string", "description": "The verifiable claim"},
+							"kind":   map[string]interface{}{"type": "string", "description": "verifiable | empirical | refutable"},
+							"source": map[string]interface{}{"type": "string", "description": "Optional evidence source (paper, benchmark, prior work)"},
+						},
+					},
+					"description": "Optional list of key verifiable claims backing this proposal. Critiquing sessions judge each claim; a winner whose claims are mostly refuted becomes UNDECIDED.",
+				},
 			},
 			"required": []string{"session_id", "auth_token", "approach", "architecture", "risks", "estimated_subtasks", "confidence"},
 		},
@@ -67,6 +80,7 @@ func SubmitProposalTool(machine *state.Machine) (*mcp.Tool, mcp.ToolHandler) {
 			Approach:     getString(args, "approach"),
 			Architecture: getString(args, "architecture"),
 			Risks:        getStringSlice(args, "risks"),
+			Evidence:     getClaimSlice(args, "evidence"),
 			Subtasks:     getInt(args, "estimated_subtasks"),
 			Confidence:   getInt(args, "confidence"),
 			Timestamp:    time.Now(),

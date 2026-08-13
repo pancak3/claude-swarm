@@ -260,6 +260,14 @@ func (m *Machine) SubmitVote(v *protocol.Vote) error {
 	if _, exists := m.votes[v.ID]; exists {
 		return fmt.Errorf("vote %q already submitted", v.ID)
 	}
+	// Reject a second vote from the same session. Without this, a split-brain
+	// session that re-submits (with a freshly generated vote ID) would append a
+	// second VoterPref and double-count its ballot in the IRV tally.
+	for _, existing := range m.votes {
+		if existing.SessionID == v.SessionID {
+			return fmt.Errorf("session %q already voted", v.SessionID)
+		}
+	}
 	m.votes[v.ID] = v
 	m.voterPrefs = append(m.voterPrefs, protocol.VoterPref{
 		SessionID: v.SessionID,
@@ -325,6 +333,42 @@ func (m *Machine) GetVoteResult() *protocol.TallyResult {
 	m.voteResultMu.RLock()
 	defer m.voteResultMu.RUnlock()
 	return m.voteResult
+}
+
+// ApplyEvidenceGate clears the winner (→ UNDECIDED) when the winning proposal's
+// evidence claims were refuted by >= threshold fraction of critiquing sessions.
+// It is a no-op unless BOTH conditions hold:
+//   - >= 2 distinct sessions critiqued the winner (matches the fatal-flaw
+//     denominator rule so a single session cannot gate a winner), and
+//   - the winner listed evidence claims AND >= threshold fraction were marked
+//     "refuted" in claim_verdicts.
+//
+// Returns a human-readable reason when the gate fires, otherwise "".
+func (m *Machine) ApplyEvidenceGate(threshold float64) string {
+	res := m.GetVoteResult()
+	if res == nil || res.Winner == "" {
+		return ""
+	}
+
+	critiques := m.GetCritiquesForProposal(res.Winner)
+	critiquingSessions := make(map[string]bool)
+	for _, c := range critiques {
+		critiquingSessions[c.SessionID] = true
+	}
+	if len(critiquingSessions) < 2 {
+		return ""
+	}
+
+	frac := protocol.RefutedFraction(critiques, res.Winner)
+	if frac < threshold {
+		return ""
+	}
+
+	m.voteResultMu.Lock()
+	m.voteResult.Winner = ""
+	m.voteResultMu.Unlock()
+	return fmt.Sprintf("winner refuted: %.0f%% of evidence claims refuted (>= %.0f%% threshold)",
+		frac*100, threshold*100)
 }
 
 // SubmissionCount returns how many sessions have submitted for the current round.

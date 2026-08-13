@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/anthropics/claude-code/plugins/claude-swarm/swarm-bus/protocol"
 	"github.com/anthropics/claude-code/plugins/claude-swarm/swarm-bus/state"
 )
 
@@ -63,6 +64,46 @@ func getInt(args map[string]interface{}, key string) int {
 		return int(v)
 	}
 	return 0
+}
+
+// getClaimSlice extracts an evidence claim array ([]Claim) from args.
+func getClaimSlice(args map[string]interface{}, key string) []protocol.Claim {
+	arr, ok := args[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	claims := make([]protocol.Claim, 0, len(arr))
+	for _, v := range arr {
+		obj, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		c := protocol.Claim{
+			ID:     getString(obj, "id"),
+			Text:   getString(obj, "text"),
+			Kind:   getString(obj, "kind"),
+			Source: getString(obj, "source"),
+		}
+		if c.ID != "" || c.Text != "" {
+			claims = append(claims, c)
+		}
+	}
+	return claims
+}
+
+// getClaimVerdicts extracts a claim_verdicts map (claimID → verdict) from args.
+func getClaimVerdicts(args map[string]interface{}, key string) map[string]protocol.ClaimVerdict {
+	raw, ok := args[key].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	verdicts := make(map[string]protocol.ClaimVerdict, len(raw))
+	for claimID, v := range raw {
+		if s, ok := v.(string); ok {
+			verdicts[claimID] = protocol.ClaimVerdict(s)
+		}
+	}
+	return verdicts
 }
 
 // checkAuth validates that the caller provided a valid session_id + auth_token pair.

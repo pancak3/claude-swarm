@@ -33,6 +33,13 @@ func SubmitCritiqueTool(machine *state.Machine) (*mcp.Tool, mcp.ToolHandler) {
 							"strengths":          map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
 							"weaknesses":         map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
 							"fatal_flaw":         map[string]interface{}{"type": "string", "description": "If the proposal has a fatal flaw, describe it here"},
+							"claim_verdicts": map[string]interface{}{
+								"type": "object",
+								"additionalProperties": map[string]interface{}{
+									"type": "string", "enum": []string{"verifiable", "refuted", "unverifiable"},
+								},
+								"description": "Map of proposal evidence claim ID → your verdict (verifiable/refuted/unverifiable). Judges each claim in the proposal's evidence list.",
+							},
 						},
 						"required": []string{"target_proposal_id", "strengths", "weaknesses"},
 					},
@@ -78,6 +85,7 @@ func SubmitCritiqueTool(machine *state.Machine) (*mcp.Tool, mcp.ToolHandler) {
 				Strengths:        getStringSlice(cMap, "strengths"),
 				Weaknesses:       getStringSlice(cMap, "weaknesses"),
 				FatalFlaw:        fatalFlaw,
+				ClaimVerdicts:    getClaimVerdicts(cMap, "claim_verdicts"),
 				Timestamp:        time.Now(),
 			}
 			if err := protocol.ValidateCritique(c); err != nil {

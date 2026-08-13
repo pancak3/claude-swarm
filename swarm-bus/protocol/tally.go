@@ -29,20 +29,24 @@ func TallyVotes(votes []Vote, activeProposals []string) (*TallyResult, error) {
 			counts[pid] = 0
 		}
 
+		// Count continuing (non-exhausted) ballots only. Exhausted ballots
+		// (voters whose entire ranking was eliminated) contribute no vote,
+		// so the majority denominator must exclude them.
+		continuingVotes := 0
 		for _, vote := range votes {
 			for _, pid := range vote.RankedVotes {
 				if remaining[pid] {
 					counts[pid]++
+					continuingVotes++
 					break
 				}
 			}
 		}
 
-		totalVotes := len(votes)
-		majority := totalVotes/2 + 1
+		majority := continuingVotes/2 + 1
 		tr := TallyRound{
 			CandidateVotes: copyMap(counts),
-			TotalVotes:     totalVotes,
+			TotalVotes:     continuingVotes,
 		}
 
 		// Check for majority winner.
@@ -56,7 +60,7 @@ func TallyVotes(votes []Vote, activeProposals []string) (*TallyResult, error) {
 
 		// Eliminate lowest — handle ties.
 		lowestPID := ""
-		lowestCount := totalVotes + 1
+		lowestCount := continuingVotes + 1
 		for _, count := range counts {
 			if count < lowestCount {
 				lowestCount = count
@@ -79,9 +83,16 @@ func TallyVotes(votes []Vote, activeProposals []string) (*TallyResult, error) {
 		result.RoundResults = append(result.RoundResults, tr)
 	}
 
-	// One remaining — winner.
+	// Winner. Normally a single candidate remains. If multiple remain
+	// (all ballots exhausted with a zero-vote tie), break the tie
+	// deterministically by sorted ID so the outcome is reproducible.
+	remainingIDs := make([]string, 0, len(remaining))
 	for pid := range remaining {
-		result.Winner = pid
+		remainingIDs = append(remainingIDs, pid)
+	}
+	sort.Strings(remainingIDs)
+	if len(remainingIDs) > 0 {
+		result.Winner = remainingIDs[0]
 	}
 
 	// Compute Gini from the first round's vote distribution (P3.4).
@@ -130,23 +141,26 @@ func TallyVotesIncremental(voterPrefs []VoterPref, activeProposals []string) (*T
 		}
 	}
 
-	totalVotes := len(voterPrefs)
-
 	for len(remaining) > 1 {
 		counts := make(map[string]int)
 		for pid := range remaining {
 			counts[pid] = 0
 		}
+		// Count continuing (non-exhausted) ballots only. `currentChoice == ""`
+		// marks an exhausted ballot, which must be excluded from the majority
+		// denominator.
+		continuingVotes := 0
 		for _, pid := range currentChoice {
 			if pid != "" {
 				counts[pid]++
+				continuingVotes++
 			}
 		}
 
-		majority := totalVotes/2 + 1
+		majority := continuingVotes/2 + 1
 		tr := TallyRound{
 			CandidateVotes: copyMap(counts),
-			TotalVotes:     totalVotes,
+			TotalVotes:     continuingVotes,
 		}
 
 		// Check for majority winner.
@@ -159,7 +173,7 @@ func TallyVotesIncremental(voterPrefs []VoterPref, activeProposals []string) (*T
 		}
 
 		// Eliminate lowest (deterministic by ID sort on tie).
-		lowestCount := totalVotes + 1
+		lowestCount := continuingVotes + 1
 		for _, count := range counts {
 			if count < lowestCount {
 				lowestCount = count
@@ -215,9 +229,16 @@ func TallyVotesIncremental(voterPrefs []VoterPref, activeProposals []string) (*T
 		}
 	}
 
-	// One remaining — winner.
+	// Winner. Normally a single candidate remains. If multiple remain
+	// (all ballots fully exhausted with a zero-vote tie), break the tie
+	// deterministically by sorted ID so the outcome is reproducible.
+	remainingIDs := make([]string, 0, len(remaining))
 	for pid := range remaining {
-		result.Winner = pid
+		remainingIDs = append(remainingIDs, pid)
+	}
+	sort.Strings(remainingIDs)
+	if len(remainingIDs) > 0 {
+		result.Winner = remainingIDs[0]
 	}
 
 	// Compute Gini coefficient from final round's vote distribution (P3.4).
@@ -295,6 +316,29 @@ func CountFatalFlawsFromIndex(index map[string][]*Critique, threshold float64) [
 		}
 	}
 	return eliminated
+}
+
+// RefutedFraction returns the fraction of a proposal's evidence claims that
+// critiquing sessions marked "refuted". Returns 0 when no verdicts are present
+// (e.g. sessions did not fill claim_verdicts, or the proposal listed no evidence).
+func RefutedFraction(critiques []*Critique, proposalID string) float64 {
+	total := 0
+	refuted := 0
+	for _, c := range critiques {
+		if c == nil || c.TargetProposalID != proposalID {
+			continue
+		}
+		for _, v := range c.ClaimVerdicts {
+			total++
+			if v == VerdictRefuted {
+				refuted++
+			}
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return float64(refuted) / float64(total)
 }
 
 // GiniCoefficient computes the Gini coefficient of a vote distribution.

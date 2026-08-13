@@ -42,6 +42,24 @@ type RoundTimeouts struct {
 	Vote     time.Duration `json:"vote"`
 }
 
+// Claim is a verifiable claim attached to a proposal's evidence.
+// A proposal lists its key claims; critiquing sessions then judge each claim.
+type Claim struct {
+	ID     string `json:"id"`
+	Text   string `json:"text"`
+	Kind   string `json:"kind"` // "verifiable" | "empirical" | "refutable"
+	Source string `json:"source,omitempty"`
+}
+
+// ClaimVerdict is a critique's judgment on a proposal's evidence claim.
+type ClaimVerdict string
+
+const (
+	VerdictVerifiable   ClaimVerdict = "verifiable"
+	VerdictRefuted      ClaimVerdict = "refuted"
+	VerdictUnverifiable ClaimVerdict = "unverifiable"
+)
+
 // Proposal is a Round 1 submission from a session.
 type Proposal struct {
 	ID           string    `json:"id"`
@@ -49,6 +67,7 @@ type Proposal struct {
 	Approach     string    `json:"approach"`
 	Architecture string    `json:"architecture"`
 	Risks        []string  `json:"risks"`
+	Evidence     []Claim   `json:"evidence,omitempty"`
 	Subtasks     int       `json:"estimated_subtasks"`
 	Confidence   int       `json:"confidence"`
 	Timestamp    time.Time `json:"timestamp"`
@@ -56,13 +75,14 @@ type Proposal struct {
 
 // Critique is a Round 2 submission targeting a specific proposal.
 type Critique struct {
-	ID               string  `json:"id"`
-	SessionID        string  `json:"session_id"`
-	TargetProposalID string  `json:"target_proposal_id"`
-	Strengths        []string `json:"strengths"`
-	Weaknesses       []string `json:"weaknesses"`
-	FatalFlaw        *string `json:"fatal_flaw,omitempty"`
-	Timestamp        time.Time `json:"timestamp"`
+	ID               string                  `json:"id"`
+	SessionID        string                  `json:"session_id"`
+	TargetProposalID string                  `json:"target_proposal_id"`
+	Strengths        []string                `json:"strengths"`
+	Weaknesses       []string                `json:"weaknesses"`
+	FatalFlaw        *string                 `json:"fatal_flaw,omitempty"`
+	ClaimVerdicts    map[string]ClaimVerdict `json:"claim_verdicts,omitempty"`
+	Timestamp        time.Time               `json:"timestamp"`
 }
 
 // RebuttalResponse is a single response within a Rebuttal submission.

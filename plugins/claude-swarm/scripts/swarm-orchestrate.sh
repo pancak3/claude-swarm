@@ -294,8 +294,10 @@ fi
 event "Starting Swarm Bus..."
 BUS_LOG="${RUN_DIR}/bus.log"
 CHECKPOINT_FILE="${RUN_DIR}/checkpoint.json"
+SNAPSHOT_FILE="${RUN_DIR}/snapshot.json"
 
 SWARM_CHECKPOINT_FILE="${CHECKPOINT_FILE}" \
+	SWARM_SNAPSHOT_FILE="${SNAPSHOT_FILE}" \
 	SWARM_SIZE="${SWARM_SIZE}" \
 SWARM_TASK_ID="${RUN_ID}" \
 SWARM_TASK_DESCRIPTION="${TASK_DESCRIPTION}" \
@@ -759,21 +761,24 @@ synthesize_results() {
     sleep 0.5
   done
 
-  # ── Fetch results from /status (the single authoritative HTTP endpoint) ──
+  # ── Fetch results: prefer the canonical snapshot, else /status ──
+  # The snapshot is the single source of truth written by the bus on CLOSED,
+  # so the synthesizer no longer re-parses the bus stderr log for the winner.
   local status_json
-  status_json=$(curl -sf --max-time 3 "http://127.0.0.1:${port}/status" 2>/dev/null || echo "{}")
+  local snap_file="${rundir}/snapshot.json"
+  if [ -f "${snap_file}" ]; then
+    status_json=$(jq '.snapshot // {}' "${snap_file}" 2>/dev/null || echo "{}")
+  else
+    status_json=$(curl -sf --max-time 3 "http://127.0.0.1:${port}/status" 2>/dev/null || echo "{}")
+  fi
 
   local proposals_json vote_rounds_json
   proposals_json=$(echo "${status_json}" | jq '.proposals // []' 2>/dev/null || echo "[]")
   vote_rounds_json=$(echo "${status_json}" | jq '.vote_rounds // []' 2>/dev/null || echo "[]")
 
-  # ── Derive winner: first from /status winner field, fallback to bus log ──
+  # ── Derive winner from the snapshot/status (single source of truth) ──
   local winner_id elim_list tally_rounds
   winner_id=$(echo "${status_json}" | jq -r '.winner // ""' 2>/dev/null || echo "")
-  if [ -z "${winner_id}" ] || [ "${winner_id}" = "null" ]; then
-    # grep the bus stderr log for "synthesis — winner: p-XXXX"
-    winner_id=$(grep -oE "winner: [a-z0-9-]+" "${buslog}" 2>/dev/null | head -1 | sed "s/winner: //")
-  fi
 
   # Count eliminated proposals (proposals where eliminated==true).
   elim_list=$(echo "${proposals_json}" | jq -r '[.[] | select(.eliminated) | .id] | join(", ")' 2>/dev/null || echo "")

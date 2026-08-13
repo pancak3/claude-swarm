@@ -28,11 +28,12 @@ Call `swarm_submit_proposal` with:
 - risks: array of identified risks
 - estimated_subtasks: integer
 - confidence: 0-100
+- evidence: (optional) array of 1-3 key verifiable claims backing your approach, each `{id, text, kind, source}`. These let other sessions judge whether your claims hold. A winner whose claims are mostly refuted is marked UNDECIDED.
 
 ### Step 3: Monitor and participate
 Call `swarm_get_status` (with session_id and auth_token) to check the current round, then:
 
-**If CRITIQUE:** Call `swarm_read_round` with auth_token. For EACH proposal, submit ONE `swarm_submit_critique` with all critiques in the array.
+**If CRITIQUE:** Call `swarm_read_round` with auth_token. For EACH proposal, submit ONE `swarm_submit_critique` with all critiques in the array. For each proposal that lists `evidence` claims, include a `claim_verdicts` map judging each claim as `verifiable` / `refuted` / `unverifiable`.
 
 **If REBUTTAL:** Call `swarm_read_round` with auth_token. Submit `swarm_submit_rebuttal` with responses (agree/concede/defend for each critique point).
 

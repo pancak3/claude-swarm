@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -406,6 +407,11 @@ func advanceRound(machine *state.Machine) {
 			result, err := protocol.TallyVotesIncremental(voterPrefs, activeProposals)
 			if err == nil && result != nil {
 				machine.SetVoteResult(result)
+				// Evidence gate: a winner whose evidence was refuted becomes UNDECIDED.
+				evidenceFloor := parseFloatDefault("SWARM_EVIDENCE_FLOOR", 0.5)
+				if reason := machine.ApplyEvidenceGate(evidenceFloor); reason != "" {
+					fmt.Fprintf(os.Stderr, "[swarm-bus] evidence gate: %s\n", reason)
+				}
 			}
 		}
 		fmt.Fprintf(os.Stderr, "[swarm-bus] VOTE: %d votes, %d proposals — advancing\n", len(voterPrefs), len(activeProposals))
@@ -423,6 +429,7 @@ func advanceRound(machine *state.Machine) {
 		machine.RoundManager.Advance()
 		machine.ResetDoneSessions()
 	case protocol.RoundClosed:
+		writeSnapshot(machine)
 		return
 	default:
 		machine.RoundManager.Advance()
@@ -473,6 +480,63 @@ func writeCheckpoint(machine *state.Machine, round protocol.Round) {
 	} else {
 		fmt.Fprintf(os.Stderr, "[swarm-bus] checkpoint written: %s\n", cpPath)
 	}
+}
+
+// canonicalSnapshot is the schema-versioned, authoritative end-of-run artifact.
+// The synthesizer reads this single file instead of re-parsing /status plus the
+// bus stderr log plus per-session logs, removing divergence between sources.
+type canonicalSnapshot struct {
+	SchemaVersion int                   `json:"schema_version"`
+	TaskID        string                `json:"task_id"`
+	CompletedAt   string                `json:"completed_at"`
+	Snapshot      *state.StatusSnapshot `json:"snapshot"`
+}
+
+// writeSnapshot persists the full swarm state on CLOSED as a canonical JSON
+// plus a sha256 sidecar. Written unconditionally to SWARM_SNAPSHOT_FILE (if
+// set); otherwise a no-op with a stderr note for awareness.
+func writeSnapshot(machine *state.Machine) {
+	snap := machine.StatusSnapshot()
+	cs := canonicalSnapshot{
+		SchemaVersion: 1,
+		TaskID:        snap.TaskID,
+		CompletedAt:   time.Now().UTC().Format(time.RFC3339),
+		Snapshot:      snap,
+	}
+
+	data, err := json.MarshalIndent(cs, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[swarm-bus] snapshot marshal error: %v\n", err)
+		return
+	}
+
+	path := os.Getenv("SWARM_SNAPSHOT_FILE")
+	if path == "" {
+		fmt.Fprintf(os.Stderr, "[swarm-bus] SWARM_SNAPSHOT_FILE unset — canonical snapshot not written\n")
+		return
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "[swarm-bus] snapshot write error: %v\n", err)
+		return
+	}
+
+	sum := sha256.Sum256(data)
+	sidecar := fmt.Sprintf("%x", sum)
+	if err := os.WriteFile(path+".sha256", []byte(sidecar+"\n"), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "[swarm-bus] snapshot sidecar write error: %v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[swarm-bus] canonical snapshot written: %s (sha256 %s)\n", path, sidecar)
+}
+
+func parseFloatDefault(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
 }
 
 func envDefault(key, def string) string {
